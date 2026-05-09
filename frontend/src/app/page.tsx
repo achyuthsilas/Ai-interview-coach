@@ -1,56 +1,43 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 export default function Home() {
   const [backendStatus, setBackendStatus] = useState<string>("Checking...");
-  const [backendMessage, setBackendMessage] = useState<string>("");
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/hello")
+    fetch("http://localhost:8000/api/check-keys")
       .then((res) => res.json())
       .then((data) => {
-        setBackendStatus("✅ Connected");
-        setBackendMessage(data.message);
+        if (data.gemini_configured) {
+          setBackendStatus("✅ AI Ready");
+        } else {
+          setBackendStatus("⚠️ Missing API Key");
+        }
       })
-      .catch((err) => {
-        setBackendStatus("❌ Disconnected");
-        setBackendMessage("Backend is not running");
-        console.error(err);
-      });
+      .catch(() => setBackendStatus("❌ Backend Offline"));
   }, []);
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 text-white">
-      <div className="text-center space-y-6 p-8">
-        <h1 className="text-5xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+    <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 text-white px-4">
+      <div className="text-center space-y-8 max-w-2xl">
+        <h1 className="text-6xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
           AI Panel Interview Coach
         </h1>
         <p className="text-xl text-slate-300">
-          Practice interviews with multiple AI agents
+          Practice interviews with AI agents. Get instant feedback. Land your dream job.
         </p>
 
-        <div className="mt-8 p-6 bg-slate-800/50 border border-slate-700 rounded-lg max-w-md mx-auto">
-          <h2 className="text-lg font-semibold mb-3">System Status</h2>
-          <div className="space-y-2 text-sm">
-            <div className="flex justify-between">
-              <span className="text-slate-400">Frontend:</span>
-              <span>✅ Running</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">Backend:</span>
-              <span>{backendStatus}</span>
-            </div>
-            {backendMessage && (
-              <div className="text-xs text-slate-500 mt-2 pt-2 border-t border-slate-700">
-                {backendMessage}
-              </div>
-            )}
-          </div>
-        </div>
+        <Link
+          href="/setup"
+          className="inline-block px-8 py-4 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 rounded-lg font-semibold text-lg transition-all shadow-lg hover:shadow-xl hover:scale-105"
+        >
+          Start Practicing →
+        </Link>
 
-        <div className="text-sm text-slate-400 mt-8">
-          🚧 Phase 1: Foundation Setup
+        <div className="text-sm text-slate-500 pt-4">
+          System Status: {backendStatus}
         </div>
       </div>
     </main>
