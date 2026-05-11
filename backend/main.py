@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 from agents.interviewer import InterviewerAgent
 from agents.orchestrator import InterviewOrchestrator
 from database.supabase_client import db
+from fastapi import File, UploadFile
+from services.voice_service import voice_service
 from models.schemas import (
     InterviewSetup,
     InterviewTurn,
@@ -208,3 +210,13 @@ def list_sessions(user_id: str = "anonymous"):
         .execute()
     )
     return result.data
+
+@app.post("/api/voice/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    """
+    Fallback transcription via Groq Whisper.
+    Used when browser's Web Speech API isn't available or fails.
+    """
+    audio_bytes = await file.read()
+    result = voice_service.transcribe(audio_bytes, filename=file.filename or "audio.webm")
+    return result
