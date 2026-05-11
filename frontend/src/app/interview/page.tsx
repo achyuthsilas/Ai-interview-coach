@@ -148,21 +148,22 @@ export default function Interview() {
       <div className="border-t border-slate-700 px-4 py-4">
         <div className="max-w-3xl mx-auto">
           {isComplete ? (
-            <div className="text-center space-y-4">
-              <p className="text-lg text-green-400">
-                ✅ Interview Complete!
-              </p>
-              <button
-                onClick={() => {
-                  localStorage.removeItem("interviewSession");
-                  router.push("/");
-                }}
-                className="px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 rounded-lg font-semibold transition-all"
-              >
-                Start a New Interview
-              </button>
-            </div>
-          ) : (
+          <div className="text-center space-y-4">
+          <p className="text-lg text-green-400">
+            ✅ Interview Complete! Your detailed report is ready.
+          </p>
+          <button
+            onClick={() => {
+              const id = sessionId;
+              localStorage.removeItem("interviewSession");
+              router.push(`/report/${id}`);
+            }}
+            className="px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 rounded-lg font-semibold transition-all"
+          >
+            View Your Report →
+          </button>
+        </div>
+      ) : (
             <div className="flex gap-3">
               <textarea
                 value={currentAnswer}

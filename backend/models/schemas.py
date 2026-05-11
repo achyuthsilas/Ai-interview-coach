@@ -46,3 +46,27 @@ class InterviewResponse(BaseModel):
     interviewer_message: str
     question_number: int
     is_complete: bool
+
+
+
+# ============================================================
+# Phase 3 additions
+# ============================================================
+
+class FinalReport(BaseModel):
+    """The final coaching report at end of interview."""
+    overall_score: int
+    summary: str
+    top_strengths: str
+    top_weaknesses: str
+    action_items: str
+    recurring_patterns: str
+
+
+class InterviewResponseV2(BaseModel):
+    """Enhanced response that may include final report."""
+    session_id: str
+    interviewer_message: str
+    question_number: int
+    is_complete: bool
+    final_report: Optional[FinalReport] = None
