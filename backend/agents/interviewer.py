@@ -6,6 +6,7 @@ Uses Google's Gemini model to generate contextual questions.
 import os
 from typing import List
 from dotenv import load_dotenv
+from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
@@ -110,13 +111,25 @@ class InterviewerAgent:
         self.history: List[Message] = []
         self.question_count = 0
 
-        # Initialize the Gemini LLM
-        # Free tier: Gemini 2.0 Flash, 1M tokens/day
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            temperature=0.7,  # Some creativity but not random
+        self.llm = ChatGroq(
+            model="llama-3.3-70b-versatile",
+            temperature=0.7,
+            groq_api_key=os.getenv("GROQ_API_KEY"),
+        )
+        self._fallback_llm = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            temperature=0.7,
             google_api_key=os.getenv("GEMINI_API_KEY"),
         )
+
+    def _invoke(self, messages):
+        """Invoke Groq primary; fall back to Gemini on any error."""
+        try:
+            return self.llm.invoke(messages)
+        except Exception as e:
+            if "429" in str(e) or "rate" in str(e).lower() or "quota" in str(e).lower():
+                return self._fallback_llm.invoke(messages)
+            raise
 
     def _build_system_prompt(self) -> str:
         """Builds the master prompt that defines the interviewer's behavior."""
@@ -169,7 +182,7 @@ CRITICAL RULES:
         )
 
         messages = self._format_history_for_llm() + [kickoff_prompt]
-        response = self.llm.invoke(messages)
+        response = self._invoke(messages)
 
         opening = response.content
         self.history.append(Message(role="interviewer", content=opening))
@@ -195,7 +208,7 @@ CRITICAL RULES:
                 )
             )
             messages = self._format_history_for_llm() + [closing_prompt]
-            response = self.llm.invoke(messages)
+            response = self._invoke(messages)
             closing = response.content
             self.history.append(Message(role="interviewer", content=closing))
             return closing, True
@@ -209,7 +222,7 @@ CRITICAL RULES:
             )
         )
         messages = self._format_history_for_llm() + [next_q_prompt]
-        response = self.llm.invoke(messages)
+        response = self._invoke(messages)
 
         next_message = response.content
         self.history.append(Message(role="interviewer", content=next_message))

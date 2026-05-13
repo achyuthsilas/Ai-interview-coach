@@ -218,13 +218,33 @@ def list_sessions(user_id: str = "anonymous"):
     return result.data
 
 @app.post("/api/voice/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    session_id: str = "",
+):
     """
-    Fallback transcription via Groq Whisper.
-    Used when browser's Web Speech API isn't available or fails.
+    High-accuracy transcription via Groq Whisper Large v3.
+    Uses session context (JD, resume) to bias toward likely terminology.
     """
     audio_bytes = await file.read()
-    result = voice_service.transcribe(audio_bytes, filename=file.filename or "audio.webm")
+
+    # Build custom prompt from session if available
+    custom_prompt = ""
+    if session_id:
+        try:
+            session = db.get_session(session_id)
+            if session:
+                # Use first 300 chars of JD as context for Whisper
+                jd_snippet = session.get("job_description", "")[:300]
+                custom_prompt = f"Job: {jd_snippet}"
+        except Exception:
+            pass
+
+    result = voice_service.transcribe(
+        audio_bytes,
+        filename=file.filename or "audio.webm",
+        custom_prompt=custom_prompt,
+    )
     return result
 
 @app.post("/api/resume/parse")

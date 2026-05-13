@@ -10,6 +10,25 @@ interface UseSpeechSynthesisReturn {
   voices: SpeechSynthesisVoice[];
 }
 
+// Priority order — best to worst free voices typically available
+// "Natural" voices = newest Microsoft Edge neural voices (very realistic!)
+const VOICE_PRIORITY = [
+  // Microsoft Edge "Natural" voices (almost human-quality, free on Edge/Chrome)
+  "Microsoft Aria Online (Natural)",
+  "Microsoft Jenny Online (Natural)",
+  "Microsoft Guy Online (Natural)",
+  "Microsoft Davis Online (Natural)",
+  "Microsoft Tony Online (Natural)",
+  // Google Chrome's better voices
+  "Google US English",
+  "Google UK English Female",
+  "Google UK English Male",
+  // Apple/Mac neural voices
+  "Samantha",
+  "Alex",
+  "Daniel",
+];
+
 export function useSpeechSynthesis(): UseSpeechSynthesisReturn {
   const [isSupported, setIsSupported] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -24,7 +43,14 @@ export function useSpeechSynthesis(): UseSpeechSynthesisReturn {
 
     const loadVoices = () => {
       const availableVoices = window.speechSynthesis.getVoices();
-      setVoices(availableVoices);
+      if (availableVoices.length > 0) {
+        setVoices(availableVoices);
+        // Log available voices to console so you can see what you have
+        console.log(
+          "Available voices:",
+          availableVoices.map((v) => `${v.name} (${v.lang})`)
+        );
+      }
     };
 
     loadVoices();
@@ -35,10 +61,34 @@ export function useSpeechSynthesis(): UseSpeechSynthesisReturn {
     };
   }, []);
 
+  const pickBestVoice = useCallback((): SpeechSynthesisVoice | null => {
+    if (voices.length === 0) return null;
+
+    // Try priority list first
+    for (const name of VOICE_PRIORITY) {
+      const match = voices.find((v) => v.name === name);
+      if (match) return match;
+    }
+
+    // Fallback: any "Natural" voice
+    const natural = voices.find(
+      (v) => v.name.toLowerCase().includes("natural") && v.lang.startsWith("en")
+    );
+    if (natural) return natural;
+
+    // Fallback: any "Google" voice
+    const google = voices.find(
+      (v) => v.name.toLowerCase().includes("google") && v.lang.startsWith("en")
+    );
+    if (google) return google;
+
+    // Fallback: any English voice
+    return voices.find((v) => v.lang.startsWith("en")) || voices[0];
+  }, [voices]);
+
   const speak = useCallback(
     (text: string, onEnd?: () => void) => {
       if (!isSupported) {
-        // If TTS isn't supported, fire onEnd immediately
         onEnd?.();
         return;
       }
@@ -46,13 +96,14 @@ export function useSpeechSynthesis(): UseSpeechSynthesisReturn {
       window.speechSynthesis.cancel();
 
       const utterance = new SpeechSynthesisUtterance(text);
-      const preferredVoice =
-        voices.find((v) => v.name.includes("Google") && v.lang.startsWith("en")) ||
-        voices.find((v) => v.name.includes("Natural") && v.lang.startsWith("en")) ||
-        voices.find((v) => v.lang.startsWith("en"));
+      const voice = pickBestVoice();
+      if (voice) {
+        utterance.voice = voice;
+        console.log("Using voice:", voice.name);
+      }
 
-      if (preferredVoice) utterance.voice = preferredVoice;
-      utterance.rate = 1.0;
+      // More natural delivery
+      utterance.rate = 0.95;  // Slightly slower than default = more natural
       utterance.pitch = 1.0;
       utterance.volume = 1.0;
 
@@ -68,7 +119,7 @@ export function useSpeechSynthesis(): UseSpeechSynthesisReturn {
 
       window.speechSynthesis.speak(utterance);
     },
-    [isSupported, voices]
+    [isSupported, pickBestVoice]
   );
 
   const cancel = useCallback(() => {
