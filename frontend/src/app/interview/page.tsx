@@ -1,18 +1,31 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
-import { useWhisperFallback } from "@/hooks/useWhisperFallback";
 import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 import { useVisionAnalysis } from "@/hooks/useVisionAnalysis";
 import { useVoiceAnalysis } from "@/hooks/useVoiceAnalysis";
-import { WebcamPanel } from "@/components/WebcamPanel";
 
 interface ChatMessage {
   role: "interviewer" | "candidate";
   content: string;
 }
+
+// ============================================================
+// STATE MACHINE
+// ============================================================
+type Phase =
+  | "loading"        // Initial load
+  | "ai_speaking"    // AI is reading the question aloud
+  | "initial_wait"   // Question done, waiting for user to start (45s max)
+  | "user_speaking"  // User is actively speaking (timer paused)
+  | "silence_wait"   // User paused; waiting to see if they continue (20s)
+  | "submitting"     // Sending answer to backend
+  | "complete";      // Interview finished
+
+const INITIAL_WAIT_MS = 45_000;   // Max time to start speaking
+const SILENCE_RESET_MS = 20_000;  // Time after pause before auto-submit
 
 export default function Interview() {
   const router = useRouter();
@@ -20,30 +33,27 @@ export default function Interview() {
   const [company, setCompany] = useState<string>("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [currentAnswer, setCurrentAnswer] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [isComplete, setIsComplete] = useState(false);
   const [questionNumber, setQuestionNumber] = useState(1);
-  const [autoSpeak, setAutoSpeak] = useState(true);
-  const [cameraEnabled, setCameraEnabled] = useState(false);
-  const [totalFillerWords, setTotalFillerWords] = useState(0);
+  const [phase, setPhase] = useState<Phase>("loading");
+  const [countdown, setCountdown] = useState(0);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  // Hooks
   const speech = useSpeechRecognition();
-  const whisper = useWhisperFallback();
   const synthesis = useSpeechSynthesis();
   const vision = useVisionAnalysis();
   const voice = useVoiceAnalysis();
 
-  const useWhisper = !speech.isSupported;
+  // Timer refs
+  const submitTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const countdownTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const countdownEndRef = useRef<number>(0);
 
-  // Update answer from speech
-  useEffect(() => {
-    if (speech.transcript) setCurrentAnswer(speech.transcript);
-  }, [speech.transcript]);
+  // Track if we've handled the current message (to avoid re-triggering)
+  const handledMessageIndexRef = useRef(-1);
 
-  // Load session
+  // ============================================================
+  // INITIAL SETUP
+  // ============================================================
+
   useEffect(() => {
     const sessionData = localStorage.getItem("interviewSession");
     if (!sessionData) {
@@ -54,283 +64,411 @@ export default function Interview() {
     setSessionId(sessionId);
     setCompany(company);
     setMessages([{ role: "interviewer", content: firstMessage }]);
+
+    const startAll = async () => {
+      await vision.start();
+      await voice.start();
+    };
+    startAll();
+
+    return () => {
+      vision.stop();
+      voice.stop();
+      clearAllTimers();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
-  // Auto-speak interviewer messages
+  // Update answer from speech transcript
   useEffect(() => {
-    if (!autoSpeak) return;
-    const last = messages[messages.length - 1];
-    if (last && last.role === "interviewer") {
-      synthesis.speak(last.content);
+    if (speech.transcript) setCurrentAnswer(speech.transcript);
+  }, [speech.transcript]);
+
+  // ============================================================
+  // TIMER HELPERS
+  // ============================================================
+
+  const clearAllTimers = useCallback(() => {
+    if (submitTimerRef.current) {
+      clearTimeout(submitTimerRef.current);
+      submitTimerRef.current = null;
     }
-  }, [messages, autoSpeak, synthesis]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  const enableCamera = () => setCameraEnabled(true);
-
-  const disableCamera = () => {
-    vision.stop();
-    voice.stop();
-    setCameraEnabled(false);
-  };
-
-  // Start vision/voice AFTER cameraEnabled=true so WebcamPanel (and its
-  // <video> element) is in the DOM before vision.start() tries to attach the stream.
-  useEffect(() => {
-    if (cameraEnabled) {
-      vision.start();
-      voice.start();
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
     }
-  }, [cameraEnabled]); // eslint-disable-line react-hooks/exhaustive-deps
+    setCountdown(0);
+  }, []);
 
-  const handleSubmitAnswer = async () => {
-    if (!currentAnswer.trim() || loading || isComplete) return;
+  const startTimer = useCallback(
+    (durationMs: number, onExpire: () => void) => {
+      clearAllTimers();
+      countdownEndRef.current = Date.now() + durationMs;
+      setCountdown(Math.ceil(durationMs / 1000));
 
-    if (speech.isListening) speech.stopListening();
+      // Visual countdown — update every 200ms
+      countdownTimerRef.current = setInterval(() => {
+        const remaining = countdownEndRef.current - Date.now();
+        if (remaining <= 0) {
+          setCountdown(0);
+        } else {
+          setCountdown(Math.ceil(remaining / 1000));
+        }
+      }, 200);
 
-    const userMessage = currentAnswer;
-    setCurrentAnswer("");
+      // Actual submit trigger
+      submitTimerRef.current = setTimeout(onExpire, durationMs);
+    },
+    [clearAllTimers]
+  );
+
+  // ============================================================
+  // STATE MACHINE: react to phase changes
+  // ============================================================
+
+  // When a new interviewer message arrives → speak it, then start the flow
+  useEffect(() => {
+    if (messages.length === 0) return;
+    const lastIndex = messages.length - 1;
+    const last = messages[lastIndex];
+
+    // Only handle interviewer messages we haven't handled yet
+    if (last.role !== "interviewer") return;
+    if (handledMessageIndexRef.current >= lastIndex) return;
+    if (phase === "complete") return;
+
+    handledMessageIndexRef.current = lastIndex;
+    setPhase("ai_speaking");
+
+    // Speak the question; when done, transition to initial_wait
+    synthesis.speak(last.content, () => {
+      transitionToInitialWait();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, synthesis, phase]);
+
+  // ===== STATE TRANSITIONS =====
+
+  const transitionToInitialWait = useCallback(() => {
+    // Question done speaking. Start listening, give user 45s to start.
     speech.resetTranscript();
-    setMessages((prev) => [...prev, { role: "candidate", content: userMessage }]);
-    setLoading(true);
+    setCurrentAnswer("");
+    speech.startListening();
+    setPhase("initial_wait");
 
-    // Count filler words in this answer
-    const fillers = voice.countFillerWords(userMessage);
-    setTotalFillerWords((prev) => prev + fillers);
+    startTimer(INITIAL_WAIT_MS, () => {
+      // 45s passed with no speech → submit empty answer
+      handleSubmit("(No answer — candidate was silent)");
+    });
+  }, [speech, startTimer]);
 
-    try {
-      const res = await fetch("http://localhost:8000/api/interview/respond", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, answer: userMessage }),
-      });
+  const transitionToUserSpeaking = useCallback(() => {
+    clearAllTimers();
+    setPhase("user_speaking");
+  }, [clearAllTimers]);
 
-      const data = await res.json();
-      setMessages((prev) => [
-        ...prev,
-        { role: "interviewer", content: data.interviewer_message },
-      ]);
-      setQuestionNumber(data.question_number);
-      setIsComplete(data.is_complete);
+  const transitionToSilenceWait = useCallback(() => {
+    setPhase("silence_wait");
+    startTimer(SILENCE_RESET_MS, () => {
+      // 20s passed with no more speech → submit what we have
+      handleSubmit(speech.transcript.trim() || currentAnswer.trim());
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startTimer, speech.transcript, currentAnswer]);
 
-      if (data.is_complete) disableCamera();
-    } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "interviewer",
-          content: "Sorry, something went wrong. Please try again.",
-        },
-      ]);
-    } finally {
-      setLoading(false);
+  // ============================================================
+  // Watch for speaking → react accordingly
+  // ============================================================
+
+  useEffect(() => {
+    // Only relevant during these phases
+    if (phase !== "initial_wait" && phase !== "user_speaking" && phase !== "silence_wait") {
+      return;
     }
-  };
 
-  const toggleVoiceInput = async () => {
-    if (useWhisper) {
-      if (whisper.isRecording) {
-        const text = await whisper.stopRecording();
-        setCurrentAnswer((prev) => (prev + " " + text).trim());
-      } else {
-        await whisper.startRecording();
+    if (speech.isActivelySpeaking) {
+      // User started/continued speaking → pause any timer
+      if (phase !== "user_speaking") {
+        transitionToUserSpeaking();
       }
     } else {
-      if (speech.isListening) speech.stopListening();
-      else {
-        speech.resetTranscript();
-        setCurrentAnswer("");
-        speech.startListening();
+      // User stopped speaking
+      if (phase === "user_speaking") {
+        // Just finished a sentence → start 20s silence countdown
+        transitionToSilenceWait();
       }
+      // If we're in initial_wait or silence_wait already, do nothing
+      // (timers handle the auto-submit)
+    }
+  }, [speech.isActivelySpeaking, phase, transitionToUserSpeaking, transitionToSilenceWait]);
+
+  // ============================================================
+  // SUBMIT
+  // ============================================================
+
+  const handleSubmit = useCallback(
+    async (answer: string) => {
+      clearAllTimers();
+      speech.stopListening();
+      setPhase("submitting");
+
+      const finalAnswer = answer.trim() || "(No answer provided)";
+
+      setCurrentAnswer("");
+      speech.resetTranscript();
+      setMessages((prev) => [...prev, { role: "candidate", content: finalAnswer }]);
+
+      // Count filler words
+      voice.countFillerWords(finalAnswer);
+
+      try {
+        const res = await fetch("http://localhost:8000/api/interview/respond", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, answer: finalAnswer }),
+        });
+        const data = await res.json();
+        setMessages((prev) => [
+          ...prev,
+          { role: "interviewer", content: data.interviewer_message },
+        ]);
+        setQuestionNumber(data.question_number);
+
+        if (data.is_complete) {
+          await saveFinalMetrics();
+          setPhase("complete");
+        }
+      } catch (err) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "interviewer",
+            content: "Sorry, something went wrong. Please try again.",
+          },
+        ]);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionId, voice, speech, clearAllTimers]
+  );
+
+  const saveFinalMetrics = async () => {
+    const visionAgg = vision.getAggregated();
+    const voiceAgg = voice.getAggregated();
+
+    const payload = {
+      avg_confidence: visionAgg.avgConfidence,
+      avg_eye_contact: visionAgg.avgEyeContact,
+      avg_stress: visionAgg.avgStress,
+      dominant_emotion: visionAgg.dominantEmotion,
+      total_filler_words: voiceAgg.totalFillerWords,
+      filler_word_breakdown: voiceAgg.fillerWordBreakdown,
+      avg_volume: voiceAgg.avgVolume,
+      speaking_time_seconds: voiceAgg.speakingTimeSeconds,
+      silent_time_seconds: voiceAgg.silentTimeSeconds,
+    };
+
+    try {
+      await fetch(`http://localhost:8000/api/interview/${sessionId}/metrics`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      console.error("Failed to save metrics:", err);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmitAnswer();
-    }
+  const handleManualSubmit = () => {
+    const answer = speech.transcript.trim() || currentAnswer.trim();
+    if (answer) handleSubmit(answer);
   };
 
-  const isRecording = useWhisper ? whisper.isRecording : speech.isListening;
+  // ============================================================
+  // UI HELPERS
+  // ============================================================
+
+  const phaseInfo = {
+    loading: { label: "Loading...", color: "text-slate-400", showTimer: false },
+    ai_speaking: { label: "🔊 Interviewer is speaking", color: "text-blue-400", showTimer: false },
+    initial_wait: { label: "🤔 Take your time...", color: "text-slate-300", showTimer: true },
+    user_speaking: { label: "🎤 Listening...", color: "text-green-400", showTimer: false },
+    silence_wait: { label: "⏸️ Paused — keep going or wait", color: "text-yellow-400", showTimer: true },
+    submitting: { label: "💭 Processing...", color: "text-purple-400", showTimer: false },
+    complete: { label: "✅ Complete", color: "text-green-400", showTimer: false },
+  }[phase];
+
+  const isComplete = phase === "complete";
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-white flex flex-col">
-      {/* Header */}
-      <header className="border-b border-slate-700 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div>
-            <h1 className="text-xl font-semibold">{company} Interview</h1>
-            <p className="text-sm text-slate-400">
-              Question {questionNumber} of 5
-              {useWhisper && <span className="ml-2 text-yellow-400">(Whisper mode)</span>}
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={cameraEnabled ? disableCamera : enableCamera}
-              className={`px-3 py-1 rounded-lg text-sm transition-all ${
-                cameraEnabled
-                  ? "bg-green-600 hover:bg-green-700"
-                  : "bg-slate-700 hover:bg-slate-600"
-              }`}
-            >
-              📹 {cameraEnabled ? "Camera On" : "Enable Camera"}
-            </button>
-            <button
-              onClick={() => {
-                if (synthesis.isSpeaking) synthesis.cancel();
-                setAutoSpeak((v) => !v);
-              }}
-              className={`px-3 py-1 rounded-lg text-sm transition-all ${
-                autoSpeak ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-700 hover:bg-slate-600"
-              }`}
-            >
-              🔊 {autoSpeak ? "Voice On" : "Voice Off"}
-            </button>
-            <div className="w-32 h-2 bg-slate-700 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-blue-500 to-purple-600 transition-all duration-500"
-                style={{ width: `${(questionNumber / 5) * 100}%` }}
-              />
+    <main className="h-screen bg-gradient-to-br from-indigo-950 via-purple-950 to-slate-900 text-white overflow-hidden flex flex-col">
+      {/* Top bar */}
+      <header className="px-6 py-3 flex justify-between items-center bg-black/40 backdrop-blur-md border-b border-white/10">
+        <div className="text-sm font-semibold">
+          {company} • Question {questionNumber} / 5
+        </div>
+        <div className="flex items-center gap-4 text-sm">
+          {phaseInfo.showTimer && countdown > 0 && (
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${phase === "initial_wait" ? "bg-blue-400" : "bg-yellow-400"} animate-pulse`} />
+              <span className="font-mono font-bold text-lg">
+                {countdown}s
+              </span>
             </div>
-          </div>
+          )}
+          <span className={phaseInfo.color}>{phaseInfo.label}</span>
         </div>
       </header>
 
-      {/* Main content */}
-      <div className="flex-1 overflow-hidden">
-        <div className="max-w-7xl mx-auto h-full grid grid-cols-1 lg:grid-cols-3 gap-4 p-4">
-          {/* Webcam panel */}
-          {cameraEnabled && (
-            <div className="lg:col-span-1">
-              <WebcamPanel
-                videoRef={vision.videoRef}
-                visionMetrics={vision.metrics}
-                voiceMetrics={voice.metrics}
-                fillerWordCount={totalFillerWords}
-                isReady={vision.isReady}
-              />
+      {/* Main camera area */}
+      <div className="flex-1 relative">
+        <video
+          ref={vision.videoRef}
+          autoPlay
+          playsInline
+          muted
+          className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+        />
+
+        {!vision.isReady && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/70">
+            <div className="text-center">
+              <div className="w-16 h-16 border-4 border-purple-400 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+              <div>Loading camera & AI vision models...</div>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Chat area */}
-          <div className={`${cameraEnabled ? "lg:col-span-2" : "lg:col-span-3"} flex flex-col overflow-hidden`}>
-            <div className="flex-1 overflow-y-auto pr-2">
-              <div className="space-y-4">
-                {messages.map((msg, idx) => (
-                  <div
-                    key={idx}
-                    className={`flex ${msg.role === "candidate" ? "justify-end" : "justify-start"}`}
-                  >
-                    <div
-                      className={`max-w-[80%] rounded-2xl px-5 py-3 ${
-                        msg.role === "candidate"
-                          ? "bg-blue-600 text-white"
-                          : "bg-slate-800 border border-slate-700 text-slate-100"
-                      }`}
-                    >
-                      <div className="text-xs uppercase tracking-wider mb-1 opacity-60">
-                        {msg.role === "candidate" ? "You" : "Interviewer"}
-                      </div>
-                      <div className="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
-                    </div>
-                  </div>
-                ))}
-
-                {loading && (
-                  <div className="flex justify-start">
-                    <div className="bg-slate-800 border border-slate-700 rounded-2xl px-5 py-3">
-                      <div className="flex gap-2">
-                        <div className="w-2 h-2 bg-slate-500 rounded-full animate-bounce" />
-                        <div className="w-2 h-2 bg-slate-500 rounded-full animate-bounce [animation-delay:0.2s]" />
-                        <div className="w-2 h-2 bg-slate-500 rounded-full animate-bounce [animation-delay:0.4s]" />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                <div ref={messagesEndRef} />
-              </div>
+        {/* ==== METRICS PANEL — bigger, top-left ==== */}
+        {vision.isReady && (
+          <div className="absolute top-4 left-4 bg-black/50 backdrop-blur-md rounded-xl p-3 min-w-[180px] border border-white/10">
+            <div className="text-[10px] uppercase tracking-wider text-slate-400 mb-2 font-semibold">
+              Live Analysis
             </div>
+            <MetricBar label="Confidence" value={vision.metrics.confidence} color="green" />
+            <MetricBar label="Eye Contact" value={vision.metrics.eyeContact} color="blue" />
+            <MetricBar label="Stress" value={vision.metrics.stressLevel} color="red" />
+            <MetricBar label="Volume" value={voice.metrics.volume} color="purple" />
+            <div className="text-[10px] text-slate-400 mt-2 pt-2 border-t border-white/10">
+              Mood: <span className="text-white capitalize font-semibold">{vision.metrics.emotion}</span>
+            </div>
+          </div>
+        )}
 
-            {/* Input area */}
-            <div className="border-t border-slate-700 pt-4 mt-4">
-              {isComplete ? (
-                <div className="text-center space-y-4">
-                  <p className="text-lg text-green-400">
-                    ✅ Interview Complete! Your detailed report is ready.
-                  </p>
-                  <button
-                    onClick={() => {
-                      const id = sessionId;
-                      localStorage.removeItem("interviewSession");
-                      router.push(`/report/${id}`);
-                    }}
-                    className="px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 rounded-lg font-semibold transition-all"
-                  >
-                    View Your Report →
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {speech.interimTranscript && (
-                    <div className="text-sm text-slate-400 italic px-2">
-                      Listening... &quot;{speech.interimTranscript}&quot;
-                    </div>
-                  )}
+        {/* Speaking indicator */}
+        {speech.isActivelySpeaking && (
+          <div className="absolute top-4 right-4 bg-green-500/80 backdrop-blur-sm px-4 py-2 rounded-full text-sm font-semibold animate-pulse">
+            ● Listening
+          </div>
+        )}
 
-                  {whisper.isTranscribing && (
-                    <div className="text-sm text-yellow-400 px-2">
-                      Transcribing your answer...
-                    </div>
-                  )}
-
-                  <div className="flex gap-3">
-                    <button
-                      onClick={toggleVoiceInput}
-                      disabled={loading || whisper.isTranscribing}
-                      className={`px-5 rounded-lg font-semibold transition-all min-w-[60px] ${
-                        isRecording
-                          ? "bg-red-600 hover:bg-red-700 animate-pulse"
-                          : "bg-slate-700 hover:bg-slate-600"
-                      } disabled:opacity-50`}
-                    >
-                      {isRecording ? "🔴" : "🎤"}
-                    </button>
-
-                    <textarea
-                      value={currentAnswer}
-                      onChange={(e) => setCurrentAnswer(e.target.value)}
-                      onKeyDown={handleKeyDown}
-                      placeholder={isRecording ? "Speak now..." : "Type or press the mic to speak..."}
-                      rows={3}
-                      disabled={loading}
-                      className="flex-1 px-4 py-3 bg-slate-800 border border-slate-700 rounded-lg focus:border-blue-500 focus:outline-none resize-none disabled:opacity-50"
-                    />
-                    <button
-                      onClick={handleSubmitAnswer}
-                      disabled={loading || !currentAnswer.trim()}
-                      className="px-6 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-semibold transition-all"
-                    >
-                      Send
-                    </button>
-                  </div>
-
-                  {(speech.error || vision.error || voice.error) && (
-                    <div className="text-sm text-red-400 px-2">
-                      {speech.error || vision.error || voice.error}
-                    </div>
-                  )}
+        {/* Bottom panel: question + transcript */}
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent p-6 pb-8">
+          <div className="max-w-4xl mx-auto">
+            {/* Current question */}
+            {messages.length > 0 &&
+              messages[messages.length - 1].role === "interviewer" && (
+                <div className="mb-4 text-xl leading-relaxed font-medium text-white drop-shadow-lg">
+                  {messages[messages.length - 1].content}
                 </div>
               )}
-            </div>
+
+            {/* Live transcript */}
+            {(currentAnswer || speech.interimTranscript) &&
+              (phase === "initial_wait" ||
+                phase === "user_speaking" ||
+                phase === "silence_wait") && (
+                <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-xl px-5 py-3 mb-3">
+                  <div className="text-xs text-blue-300 mb-1">Your answer:</div>
+                  <div className="text-base text-white">
+                    {currentAnswer}
+                    <span className="text-slate-400 italic">
+                      {speech.interimTranscript}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+            {phase === "submitting" && (
+              <div className="flex justify-center">
+                <div className="bg-white/10 backdrop-blur-md rounded-full px-4 py-2 flex gap-2">
+                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" />
+                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:0.2s]" />
+                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:0.4s]" />
+                </div>
+              </div>
+            )}
+
+            {/* Manual submit button — always available during listen phases */}
+            {!isComplete &&
+              (phase === "initial_wait" ||
+                phase === "user_speaking" ||
+                phase === "silence_wait") && (
+                <div className="flex justify-center gap-3 mt-3">
+                  <button
+                    onClick={handleManualSubmit}
+                    disabled={
+                      !(speech.transcript.trim() || currentAnswer.trim())
+                    }
+                    className="px-6 py-2 bg-blue-600/80 hover:bg-blue-600 backdrop-blur-md rounded-lg font-medium disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                  >
+                    Submit Answer Now →
+                  </button>
+                </div>
+              )}
+
+            {isComplete && (
+              <div className="text-center space-y-3">
+                <p className="text-lg text-green-400">✅ Interview Complete!</p>
+                <button
+                  onClick={() => {
+                    const id = sessionId;
+                    localStorage.removeItem("interviewSession");
+                    router.push(`/report/${id}`);
+                  }}
+                  className="px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 rounded-lg font-semibold transition-all"
+                >
+                  View Your Report →
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
     </main>
+  );
+}
+
+// ============================================================
+// Bigger metric bar component
+// ============================================================
+function MetricBar({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: number;
+  color: "green" | "blue" | "red" | "purple";
+}) {
+  const colorMap = {
+    green: "from-green-500 to-emerald-400",
+    blue: "from-blue-500 to-cyan-400",
+    red: "from-red-500 to-orange-400",
+    purple: "from-purple-500 to-pink-400",
+  };
+  return (
+    <div className="mb-2 last:mb-0">
+      <div className="flex justify-between text-[11px] mb-0.5">
+        <span className="text-slate-300">{label}</span>
+        <span className="text-white font-bold">{value}%</span>
+      </div>
+      <div className="h-1.5 bg-slate-700/60 rounded-full overflow-hidden">
+        <div
+          className={`h-full bg-gradient-to-r ${colorMap[color]} transition-all duration-300`}
+          style={{ width: `${Math.min(100, value)}%` }}
+        />
+      </div>
+    </div>
   );
 }

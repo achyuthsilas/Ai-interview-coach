@@ -159,6 +159,38 @@ class Database:
             .execute()
         )
         return result.data
+    
+    # ==================== SESSION METRICS ====================
+
+    def save_metrics(self, session_id: str, metrics: Dict[str, Any]):
+        """Save aggregated vision + voice metrics for a session."""
+        # Upsert: insert or update if exists
+        existing = (
+            self.client.table("session_metrics")
+            .select("id")
+            .eq("session_id", session_id)
+            .execute()
+        )
+        
+        if existing.data:
+            self.client.table("session_metrics").update(metrics).eq(
+                "session_id", session_id
+            ).execute()
+        else:
+            self.client.table("session_metrics").insert({
+                "session_id": session_id,
+                **metrics,
+            }).execute()
+
+    def get_metrics(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get metrics for a session."""
+        result = (
+            self.client.table("session_metrics")
+            .select("*")
+            .eq("session_id", session_id)
+            .execute()
+        )
+        return result.data[0] if result.data else None
 
 
 # Singleton instance — import this everywhere

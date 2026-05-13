@@ -4,20 +4,18 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import * as faceapi from "face-api.js";
 
 export interface VisionMetrics {
-  confidence: number;          // 0-100
-  emotion: string;             // "happy", "neutral", "sad", etc.
-  eyeContact: number;          // 0-100
+  confidence: number;
+  emotion: string;
+  eyeContact: number;
   faceDetected: boolean;
-  stressLevel: number;         // 0-100 (higher = more stress)
+  stressLevel: number;
 }
 
-interface UseVisionAnalysisReturn {
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-  metrics: VisionMetrics;
-  isReady: boolean;
-  error: string | null;
-  start: () => Promise<void>;
-  stop: () => void;
+export interface AggregatedVisionMetrics {
+  avgConfidence: number;
+  avgEyeContact: number;
+  avgStress: number;
+  dominantEmotion: string;
 }
 
 const DEFAULT_METRICS: VisionMetrics = {
@@ -28,7 +26,7 @@ const DEFAULT_METRICS: VisionMetrics = {
   stressLevel: 0,
 };
 
-export function useVisionAnalysis(): UseVisionAnalysisReturn {
+export function useVisionAnalysis() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -37,8 +35,14 @@ export function useVisionAnalysis(): UseVisionAnalysisReturn {
   const [isReady, setIsReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modelsLoaded, setModelsLoaded] = useState(false);
+  const pendingStartRef = useRef(false);
 
-  // Load face-api.js models once
+  // Aggregation refs
+  const confidenceSamplesRef = useRef<number[]>([]);
+  const eyeContactSamplesRef = useRef<number[]>([]);
+  const stressSamplesRef = useRef<number[]>([]);
+  const emotionCountsRef = useRef<Record<string, number>>({});
+
   useEffect(() => {
     const loadModels = async () => {
       try {
@@ -50,12 +54,29 @@ export function useVisionAnalysis(): UseVisionAnalysisReturn {
         ]);
         setModelsLoaded(true);
       } catch (err) {
-        console.error("Failed to load face-api models:", err);
         setError("Failed to load vision models");
       }
     };
-
     loadModels();
+  }, []);
+
+  const getAggregated = useCallback((): AggregatedVisionMetrics => {
+    const avg = (arr: number[]) =>
+      arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
+
+    const emotions = emotionCountsRef.current;
+    const dominantEmotion =
+      Object.entries(emotions).reduce(
+        (max, [k, v]) => (v > max[1] ? [k, v] : max),
+        ["neutral", 0]
+      )[0] as string;
+
+    return {
+      avgConfidence: avg(confidenceSamplesRef.current),
+      avgEyeContact: avg(eyeContactSamplesRef.current),
+      avgStress: avg(stressSamplesRef.current),
+      dominantEmotion,
+    };
   }, []);
 
   const analyze = useCallback(async () => {
@@ -75,33 +96,33 @@ export function useVisionAnalysis(): UseVisionAnalysisReturn {
       const expressions = detection.expressions;
       const landmarks = detection.landmarks;
 
-      // Find dominant emotion
-      const emotionEntries = Object.entries(expressions);
-      const dominant = emotionEntries.reduce((max, curr) =>
+      const dominant = Object.entries(expressions).reduce((max, curr) =>
         curr[1] > max[1] ? curr : max
       );
 
-      // Confidence score: higher when happy/neutral, lower when fearful/sad/angry
       const positiveScore =
         (expressions.happy + expressions.neutral + expressions.surprised) * 100;
       const confidence = Math.round(Math.min(positiveScore, 100));
 
-      // Stress level: higher when fearful, angry, sad
       const stressScore =
         (expressions.fearful + expressions.angry + expressions.sad + expressions.disgusted) * 100;
       const stressLevel = Math.round(Math.min(stressScore, 100));
 
-      // Eye contact estimate: distance between eye landmarks and face center
-      // Simple heuristic — symmetric eyes pointing forward = good eye contact
       const leftEye = landmarks.getLeftEye();
       const rightEye = landmarks.getRightEye();
       const nose = landmarks.getNose();
-
       const eyesMidX = (leftEye[0].x + rightEye[3].x) / 2;
       const noseX = nose[3].x;
       const offset = Math.abs(eyesMidX - noseX);
       const faceWidth = Math.abs(rightEye[3].x - leftEye[0].x);
       const eyeContactScore = Math.max(0, 100 - (offset / faceWidth) * 200);
+
+      // Aggregate
+      confidenceSamplesRef.current.push(confidence);
+      eyeContactSamplesRef.current.push(Math.round(eyeContactScore));
+      stressSamplesRef.current.push(stressLevel);
+      emotionCountsRef.current[dominant[0]] =
+        (emotionCountsRef.current[dominant[0]] || 0) + 1;
 
       setMetrics({
         confidence,
@@ -111,38 +132,43 @@ export function useVisionAnalysis(): UseVisionAnalysisReturn {
         stressLevel,
       });
     } catch (err) {
-      console.error("Analysis error:", err);
+      // Silent fail per frame
     }
   }, [modelsLoaded]);
 
-  const start = useCallback(async () => {
-    if (!modelsLoaded) {
-      setError("Models not loaded yet, please wait...");
-      return;
-    }
-
+  const openCamera = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: "user" },
+        video: { width: 1280, height: 720, facingMode: "user" },
       });
-
       streamRef.current = stream;
-
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
-
       setIsReady(true);
       setError(null);
-
-      // Analyze every 500ms
       intervalRef.current = setInterval(analyze, 500);
     } catch (err) {
       setError("Camera access denied");
-      console.error(err);
     }
-  }, [modelsLoaded, analyze]);
+  }, [analyze]);
+
+  // Auto-start camera once models finish loading (if start() was called early)
+  useEffect(() => {
+    if (modelsLoaded && pendingStartRef.current) {
+      pendingStartRef.current = false;
+      openCamera();
+    }
+  }, [modelsLoaded, openCamera]);
+
+  const start = useCallback(async () => {
+    if (!modelsLoaded) {
+      pendingStartRef.current = true;
+      return;
+    }
+    await openCamera();
+  }, [modelsLoaded, openCamera]);
 
   const stop = useCallback(() => {
     if (intervalRef.current) {
@@ -150,12 +176,10 @@ export function useVisionAnalysis(): UseVisionAnalysisReturn {
       intervalRef.current = null;
     }
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
+    if (videoRef.current) videoRef.current.srcObject = null;
     setIsReady(false);
     setMetrics(DEFAULT_METRICS);
   }, []);
@@ -164,5 +188,5 @@ export function useVisionAnalysis(): UseVisionAnalysisReturn {
     return () => stop();
   }, [stop]);
 
-  return { videoRef, metrics, isReady, error, start, stop };
+  return { videoRef, metrics, isReady, error, start, stop, getAggregated };
 }

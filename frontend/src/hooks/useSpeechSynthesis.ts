@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback } from "react";
 interface UseSpeechSynthesisReturn {
   isSupported: boolean;
   isSpeaking: boolean;
-  speak: (text: string) => void;
+  speak: (text: string, onEnd?: () => void) => void;
   cancel: () => void;
   voices: SpeechSynthesisVoice[];
 }
@@ -36,31 +36,35 @@ export function useSpeechSynthesis(): UseSpeechSynthesisReturn {
   }, []);
 
   const speak = useCallback(
-    (text: string) => {
-      if (!isSupported) return;
+    (text: string, onEnd?: () => void) => {
+      if (!isSupported) {
+        // If TTS isn't supported, fire onEnd immediately
+        onEnd?.();
+        return;
+      }
 
-      // Cancel any ongoing speech
       window.speechSynthesis.cancel();
 
       const utterance = new SpeechSynthesisUtterance(text);
-
-      // Try to pick a natural-sounding English voice
       const preferredVoice =
         voices.find((v) => v.name.includes("Google") && v.lang.startsWith("en")) ||
         voices.find((v) => v.name.includes("Natural") && v.lang.startsWith("en")) ||
         voices.find((v) => v.lang.startsWith("en"));
 
-      if (preferredVoice) {
-        utterance.voice = preferredVoice;
-      }
-
+      if (preferredVoice) utterance.voice = preferredVoice;
       utterance.rate = 1.0;
       utterance.pitch = 1.0;
       utterance.volume = 1.0;
 
       utterance.onstart = () => setIsSpeaking(true);
-      utterance.onend = () => setIsSpeaking(false);
-      utterance.onerror = () => setIsSpeaking(false);
+      utterance.onend = () => {
+        setIsSpeaking(false);
+        onEnd?.();
+      };
+      utterance.onerror = () => {
+        setIsSpeaking(false);
+        onEnd?.();
+      };
 
       window.speechSynthesis.speak(utterance);
     },

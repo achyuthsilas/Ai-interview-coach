@@ -14,6 +14,10 @@ from agents.orchestrator import InterviewOrchestrator
 from database.supabase_client import db
 from fastapi import File, UploadFile
 from services.voice_service import voice_service
+from models.schemas import SessionMetrics
+from pypdf import PdfReader
+import io
+
 from models.schemas import (
     InterviewSetup,
     InterviewTurn,
@@ -190,11 +194,13 @@ def get_report(session_id: str):
 
     evaluations = db.get_evaluations(session_id)
     messages = db.get_messages(session_id)
+    metrics = db.get_metrics(session_id)
 
     return {
         "report": report,
         "evaluations": evaluations,
         "messages": messages,
+        "metrics": metrics,
     }
 
 
@@ -220,3 +226,32 @@ async def transcribe_audio(file: UploadFile = File(...)):
     audio_bytes = await file.read()
     result = voice_service.transcribe(audio_bytes, filename=file.filename or "audio.webm")
     return result
+
+@app.post("/api/resume/parse")
+async def parse_resume(file: UploadFile = File(...)):
+    """Extract text from an uploaded PDF resume."""
+    try:
+        contents = await file.read()
+        
+        if file.filename and file.filename.lower().endswith(".pdf"):
+            pdf = PdfReader(io.BytesIO(contents))
+            text = ""
+            for page in pdf.pages:
+                text += page.extract_text() + "\n"
+            return {"success": True, "text": text.strip()}
+        else:
+            # Treat as plain text
+            text = contents.decode("utf-8", errors="ignore")
+            return {"success": True, "text": text.strip()}
+    except Exception as e:
+        return {"success": False, "error": str(e), "text": ""}
+    
+
+@app.post("/api/interview/{session_id}/metrics")
+async def save_session_metrics(session_id: str, metrics: dict):
+    """Save aggregated metrics from vision + voice analysis."""
+    try:
+        db.save_metrics(session_id, metrics)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

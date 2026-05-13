@@ -70,3 +70,20 @@ class InterviewResponseV2(BaseModel):
     question_number: int
     is_complete: bool
     final_report: Optional[FinalReport] = None
+
+# ============================================================
+# Phase 4.5: Vision + Voice Metrics
+# ============================================================
+
+class SessionMetrics(BaseModel):
+    """Aggregated metrics from one interview session."""
+    session_id: str
+    avg_confidence: int
+    avg_eye_contact: int
+    avg_stress: int
+    dominant_emotion: str
+    total_filler_words: int
+    filler_word_breakdown: dict
+    avg_volume: int
+    speaking_time_seconds: int
+    silent_time_seconds: int

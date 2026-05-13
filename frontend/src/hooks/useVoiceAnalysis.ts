@@ -4,24 +4,27 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import Meyda from "meyda";
 
 export interface VoiceMetrics {
-  volume: number;          // 0-100
-  pitch: number;           // Hz
-  pace: string;            // "slow", "normal", "fast"
+  volume: number;
+  pitch: number;
+  pace: string;
   fillerWordCount: number;
   isSpeaking: boolean;
 }
 
-const FILLER_WORDS = ["um", "uh", "like", "you know", "basically", "actually", "literally"];
-
-interface UseVoiceAnalysisReturn {
-  metrics: VoiceMetrics;
-  start: () => Promise<void>;
-  stop: () => void;
-  countFillerWords: (text: string) => number;
-  error: string | null;
+export interface AggregatedVoiceMetrics {
+  avgVolume: number;
+  speakingTimeSeconds: number;
+  silentTimeSeconds: number;
+  totalFillerWords: number;
+  fillerWordBreakdown: Record<string, number>;
 }
 
-export function useVoiceAnalysis(): UseVoiceAnalysisReturn {
+const FILLER_WORDS = [
+  "um", "uh", "umm", "uhh", "like", "you know", "basically",
+  "actually", "literally", "sort of", "kind of", "right", "okay so",
+];
+
+export function useVoiceAnalysis() {
   const [metrics, setMetrics] = useState<VoiceMetrics>({
     volume: 0,
     pitch: 0,
@@ -35,19 +38,57 @@ export function useVoiceAnalysis(): UseVoiceAnalysisReturn {
   const analyzerRef = useRef<any>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
+  // Aggregation refs (don't trigger re-renders)
+  const volumeSamplesRef = useRef<number[]>([]);
+  const speakingFramesRef = useRef(0);
+  const silentFramesRef = useRef(0);
+  const fillerBreakdownRef = useRef<Record<string, number>>({});
+
   const countFillerWords = useCallback((text: string): number => {
-    const lower = text.toLowerCase();
-    return FILLER_WORDS.reduce((count, word) => {
+    const lower = " " + text.toLowerCase() + " ";
+    let total = 0;
+    FILLER_WORDS.forEach((word) => {
       const regex = new RegExp(`\\b${word}\\b`, "g");
-      return count + (lower.match(regex)?.length || 0);
-    }, 0);
+      const matches = lower.match(regex);
+      const count = matches?.length || 0;
+      if (count > 0) {
+        fillerBreakdownRef.current[word] =
+          (fillerBreakdownRef.current[word] || 0) + count;
+        total += count;
+      }
+    });
+    return total;
+  }, []);
+
+  const getAggregated = useCallback((): AggregatedVoiceMetrics => {
+    const samples = volumeSamplesRef.current;
+    const avgVolume =
+      samples.length > 0
+        ? Math.round(samples.reduce((a, b) => a + b, 0) / samples.length)
+        : 0;
+
+    // Each frame is ~100ms (we sample at 10Hz approximately)
+    const speakingSeconds = Math.round(speakingFramesRef.current / 10);
+    const silentSeconds = Math.round(silentFramesRef.current / 10);
+
+    const totalFillers = Object.values(fillerBreakdownRef.current).reduce(
+      (a, b) => a + b,
+      0
+    );
+
+    return {
+      avgVolume,
+      speakingTimeSeconds: speakingSeconds,
+      silentTimeSeconds: silentSeconds,
+      totalFillerWords: totalFillers,
+      fillerWordBreakdown: { ...fillerBreakdownRef.current },
+    };
   }, []);
 
   const start = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-
       const audioContext = new AudioContext();
       audioContextRef.current = audioContext;
       const source = audioContext.createMediaStreamSource(stream);
@@ -60,14 +101,22 @@ export function useVoiceAnalysis(): UseVoiceAnalysisReturn {
         callback: (features: any) => {
           const volume = Math.min(100, Math.round((features.rms || 0) * 500));
           const pitch = Math.round(features.spectralCentroid || 0);
-          const isSpeaking = volume > 5;
+          const isSpeaking = volume > 8;
 
-          setMetrics((prev) => ({
-            ...prev,
+          // Aggregate
+          volumeSamplesRef.current.push(volume);
+          if (isSpeaking) speakingFramesRef.current++;
+          else silentFramesRef.current++;
+
+          setMetrics({
             volume,
             pitch,
+            pace: "normal",
+            fillerWordCount: Object.values(fillerBreakdownRef.current).reduce(
+              (a, b) => a + b, 0
+            ),
             isSpeaking,
-          }));
+          });
         },
       });
 
@@ -75,7 +124,6 @@ export function useVoiceAnalysis(): UseVoiceAnalysisReturn {
       analyzerRef.current = analyzer;
     } catch (err) {
       setError("Microphone access denied");
-      console.error(err);
     }
   }, []);
 
@@ -98,5 +146,5 @@ export function useVoiceAnalysis(): UseVoiceAnalysisReturn {
     return () => stop();
   }, [stop]);
 
-  return { metrics, start, stop, countFillerWords, error };
+  return { metrics, start, stop, countFillerWords, getAggregated, error };
 }
