@@ -52,15 +52,13 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
 ]
 
-# Add production frontend URL from env var (set on Fly.io)
+# Add production frontend URL from env var
 production_frontend = os.getenv("FRONTEND_URL")
 if production_frontend:
     ALLOWED_ORIGINS.append(production_frontend)
 
-# Allow Vercel preview deployments (e.g., your-app-git-branch.vercel.app)
-# Pattern match for any subdomain of vercel.app
-import re
-ALLOWED_ORIGIN_REGEX = r"https://.*\.vercel\.app"
+# Allow Vercel preview deployments + HF Spaces
+ALLOWED_ORIGIN_REGEX = r"https://.*\.(vercel\.app|hf\.space)"
 
 app.add_middleware(
     CORSMiddleware,
@@ -114,6 +112,9 @@ def _rebuild_orchestrator(session_id: str) -> InterviewOrchestrator:
 # ============================================================
 
 @app.get("/")
+@app.head("/")          # UptimeRobot and other monitors use HEAD
+@app.get("/health")
+@app.head("/health")
 def root():
     return {
         "status": "ok",
@@ -362,11 +363,10 @@ async def save_session_metrics(session_id: str, metrics: dict):
 
 if __name__ == "__main__":
     import uvicorn
-    # Use PORT env var (Fly.io sets this to 8080)
-    port = int(os.getenv("PORT", 8000))
+    # HF Spaces uses 7860, Fly.io used 8080, local dev uses 8000
+    port = int(os.getenv("PORT", 7860))
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=port,
-        # No --reload in production
     )

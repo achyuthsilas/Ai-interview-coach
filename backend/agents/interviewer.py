@@ -111,15 +111,17 @@ class InterviewerAgent:
         self.history: List[Message] = []
         self.question_count = 0
 
-        self.llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
-            temperature=0.7,
-            groq_api_key=os.getenv("GROQ_API_KEY"),
-        )
-        self._fallback_llm = ChatGoogleGenerativeAI(
+        # Gemini is primary — higher free quota, no strict token/day cap.
+        # Groq Llama is the fallback for when Gemini is unavailable.
+        self.llm = ChatGoogleGenerativeAI(
             model="gemini-2.0-flash",
             temperature=0.7,
             google_api_key=os.getenv("GEMINI_API_KEY"),
+        )
+        self._fallback_llm = ChatGroq(
+            model="llama-3.3-70b-versatile",
+            temperature=0.7,
+            groq_api_key=os.getenv("GROQ_API_KEY"),
         )
 
     def _invoke(self, messages):

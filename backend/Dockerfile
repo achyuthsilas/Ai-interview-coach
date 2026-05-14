@@ -1,24 +1,36 @@
-# Use slim Python image
+# Hugging Face Spaces requires:
+# 1. Listen on port 7860
+# 2. Run as non-root user (created during build)
+# 3. /code or /home/user is writable
+
 FROM python:3.12-slim
 
-# Set working directory
-WORKDIR /app
-
-# Install system dependencies (needed for some Python packages)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first (better layer caching)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Create non-root user (HF Spaces requirement)
+RUN useradd -m -u 1000 user
+USER user
 
-# Copy the rest of the backend code
-COPY . .
+# Set working directory and PATH
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
 
-# Fly.io expects the app to listen on port 8080
-ENV PORT=8080
-EXPOSE 8080
+WORKDIR $HOME/app
 
-# Run the app
+# Copy requirements first (better caching)
+COPY --chown=user requirements.txt requirements.txt
+RUN pip install --no-cache-dir --user --upgrade pip
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Copy app code
+COPY --chown=user . .
+
+# HF Spaces expects port 7860
+ENV PORT=7860
+EXPOSE 7860
+
+# Start the app
 CMD ["python", "main.py"]
