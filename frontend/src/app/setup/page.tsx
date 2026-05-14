@@ -2,6 +2,7 @@
 
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { API_URL } from "@/lib/config";
 
 function IconSearch() {
   return (
@@ -151,7 +152,7 @@ export default function Setup() {
     const fd = new FormData();
     fd.append("file", file);
     try {
-      const res = await fetch("http://localhost:8000/api/resume/parse", {
+      const res = await fetch(`${API_URL}/api/resume/parse`, {
         method: "POST",
         body: fd,
       });
@@ -179,7 +180,7 @@ export default function Setup() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch("http://localhost:8000/api/interview/start", {
+      const res = await fetch(`${API_URL}/api/interview/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData),

@@ -6,6 +6,7 @@ import { useSmartTranscription } from "@/hooks/useSmartTranscription";
 import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 import { useVisionAnalysis } from "@/hooks/useVisionAnalysis";
 import { useVoiceAnalysis } from "@/hooks/useVoiceAnalysis";
+import { API_URL } from "@/lib/config";
 
 interface ChatMessage {
   role: "interviewer" | "candidate";
@@ -176,7 +177,8 @@ export default function Interview() {
       voice.countFillerWords(finalAnswer);
 
       try {
-        const res = await fetch("http://localhost:8000/api/interview/respond", {
+        const res = await fetch(`${API_URL}/api/interview/respond`
+, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: sessionId, answer: finalAnswer }),
@@ -230,7 +232,7 @@ export default function Interview() {
       silent_time_seconds: voiceAgg.silentTimeSeconds,
     };
     try {
-      await fetch(`http://localhost:8000/api/interview/${sessionId}/metrics`, {
+      await fetch(`${API_URL}/api/interview/${sessionId}/metrics`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

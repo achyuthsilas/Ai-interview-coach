@@ -1,5 +1,7 @@
 "use client";
 
+import { API_URL } from "@/lib/config";
+
 import { useState, useRef, useCallback, useEffect } from "react";
 
 interface UseSmartTranscriptionReturn {
@@ -256,8 +258,8 @@ export function useSmartTranscription(sessionId: string): UseSmartTranscriptionR
       formData.append("file", audioBlob, "audio.webm");
 
       const url = sessionId
-        ? `http://localhost:8000/api/voice/transcribe?session_id=${sessionId}`
-        : "http://localhost:8000/api/voice/transcribe";
+  ? `${API_URL}/api/voice/transcribe?session_id=${sessionId}`
+  : `${API_URL}/api/voice/transcribe`;
 
       try {
         const res = await fetch(url, {

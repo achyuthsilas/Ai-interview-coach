@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import { API_URL } from "@/lib/config";
 
 interface Report {
   overall_score: number;
@@ -107,7 +108,7 @@ export default function ReportPage() {
   const [selected, setSelected] = useState<number | "overview">("overview");
 
   useEffect(() => {
-    fetch(`http://localhost:8000/api/interview/${sessionId}/report`)
+    fetch(`${API_URL}/api/interview/${sessionId}/report`)
       .then((res) => res.json())
       .then((data) => {
         setReport(data.report);

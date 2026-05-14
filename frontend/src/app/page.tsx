@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { API_URL } from "@/lib/config";
 
 export default function Home() {
   const [backendStatus, setBackendStatus] = useState<"checking" | "ready" | "offline">(
@@ -9,7 +10,7 @@ export default function Home() {
   );
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/check-keys")
+    fetch(`${API_URL}/api/check-keys`)
       .then((res) => res.json())
       .then((data) => {
         setBackendStatus(data.gemini_configured ? "ready" : "offline");
