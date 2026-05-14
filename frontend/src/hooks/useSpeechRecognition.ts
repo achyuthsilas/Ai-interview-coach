@@ -35,15 +35,6 @@ interface SpeechRecognitionInstance extends EventTarget {
   onspeechstart: (() => void) | null;
   onspeechend: (() => void) | null;
 }
-interface SpeechRecognitionConstructor {
-  new (): SpeechRecognitionInstance;
-}
-declare global {
-  interface Window {
-    SpeechRecognition?: SpeechRecognitionConstructor;
-    webkitSpeechRecognition?: SpeechRecognitionConstructor;
-  }
-}
 
 interface UseSpeechRecognitionReturn {
   isSupported: boolean;
@@ -77,8 +68,9 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
+    const SpeechRecognition = (
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    ) as ((new () => SpeechRecognitionInstance) | undefined);
 
     if (!SpeechRecognition) {
       setIsSupported(false);
