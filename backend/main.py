@@ -26,6 +26,9 @@ from models.schemas import (
     InterviewTurn,
     InterviewResponseV2,
     FinalReport,
+    Message,
+    InterviewType,
+    InterviewerPersona,
 )
 
 load_dotenv()
@@ -70,6 +73,37 @@ app.add_middleware(
 
 # In-memory cache of active orchestrators (one per session).
 active_orchestrators: Dict[str, InterviewOrchestrator] = {}
+
+
+def _rebuild_orchestrator(session_id: str) -> InterviewOrchestrator:
+    """Reconstruct an orchestrator from DB after a server restart."""
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found. It may have expired — start a new interview.",
+        )
+
+    setup = InterviewSetup(
+        company=session["company"],
+        job_description=session["job_description"],
+        resume=session["resume"],
+        interview_type=InterviewType(session["interview_type"]),
+        persona=InterviewerPersona(session["persona"]),
+    )
+
+    interviewer = InterviewerAgent(setup)
+
+    db_messages = db.get_messages(session_id)
+    for msg in db_messages:
+        interviewer.history.append(Message(role=msg["role"], content=msg["content"]))
+
+    # question_count = number of interviewer turns (opening counts as 1)
+    interviewer.question_count = sum(1 for m in db_messages if m["role"] == "interviewer")
+
+    orchestrator = InterviewOrchestrator(interviewer)
+    active_orchestrators[session_id] = orchestrator
+    return orchestrator
 
 
 # ============================================================
@@ -138,12 +172,9 @@ def start_interview(request: Request, setup: InterviewSetup):  # ← ADD `reques
 def respond_to_interview(request: Request, turn: InterviewTurn):  # ← ADD `request: Request`
     """Submit an answer; multi-agent flow runs in the background."""
     if turn.session_id not in active_orchestrators:
-        raise HTTPException(
-            status_code=404,
-            detail="Session not found. It may have expired — start a new interview.",
-        )
-
-    orchestrator = active_orchestrators[turn.session_id]
+        orchestrator = _rebuild_orchestrator(turn.session_id)
+    else:
+        orchestrator = active_orchestrators[turn.session_id]
     interviewer = orchestrator.interviewer
 
     try:
