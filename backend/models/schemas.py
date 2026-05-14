@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional, List
 from enum import Enum
+from pydantic import BaseModel, Field
 
 
 class InterviewType(str, Enum):
@@ -21,9 +22,9 @@ class InterviewerPersona(str, Enum):
 
 class InterviewSetup(BaseModel):
     """Data sent when starting a new interview."""
-    job_description: str
-    company: str
-    resume: str
+    job_description: str = Field(..., min_length=20, max_length=10000)
+    company: str = Field(..., min_length=1, max_length=200)
+    resume: str = Field(..., min_length=20, max_length=20000)
     interview_type: InterviewType
     persona: InterviewerPersona = InterviewerPersona.NEUTRAL
 

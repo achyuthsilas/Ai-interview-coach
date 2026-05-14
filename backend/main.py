@@ -8,6 +8,10 @@ from typing import Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from fastapi import Request
 
 from agents.interviewer import InterviewerAgent
 from agents.orchestrator import InterviewOrchestrator
@@ -30,18 +34,41 @@ load_dotenv()
 # APP SETUP
 # ============================================================
 
-app = FastAPI(title="AI Interview Coach API", version="0.3.0")
+app = FastAPI(title="AI Interview Coach API", version="0.6.0")
+
+# ============================================================
+# RATE LIMITING — protect against abuse
+# ============================================================
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Allowed origins — local dev + production frontend
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+# Add production frontend URL from env var (set on Fly.io)
+production_frontend = os.getenv("FRONTEND_URL")
+if production_frontend:
+    ALLOWED_ORIGINS.append(production_frontend)
+
+# Allow Vercel preview deployments (e.g., your-app-git-branch.vercel.app)
+# Pattern match for any subdomain of vercel.app
+import re
+ALLOWED_ORIGIN_REGEX = r"https://.*\.vercel\.app"
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # In-memory cache of active orchestrators (one per session).
-# The full conversation is in the DB; this just holds the live agents.
 active_orchestrators: Dict[str, InterviewOrchestrator] = {}
 
 
@@ -72,7 +99,8 @@ def check_keys():
 # ============================================================
 
 @app.post("/api/interview/start", response_model=InterviewResponseV2)
-def start_interview(setup: InterviewSetup):
+@limiter.limit("10/hour")  # ← ADD THIS
+def start_interview(request: Request, setup: InterviewSetup):  # ← ADD `request: Request`
     """Begins a new interview, persisting it to the DB."""
     try:
         # Create session in database
@@ -106,7 +134,8 @@ def start_interview(setup: InterviewSetup):
 
 
 @app.post("/api/interview/respond", response_model=InterviewResponseV2)
-def respond_to_interview(turn: InterviewTurn):
+@limiter.limit("60/hour")  # ← ADD THIS
+def respond_to_interview(request: Request, turn: InterviewTurn):  # ← ADD `request: Request`
     """Submit an answer; multi-agent flow runs in the background."""
     if turn.session_id not in active_orchestrators:
         raise HTTPException(
@@ -217,7 +246,9 @@ def list_sessions(user_id: str = "anonymous"):
     return result.data
 
 @app.post("/api/voice/transcribe")
+@limiter.limit("100/hour")  # ← ADD THIS
 async def transcribe_audio(
+    request: Request,  # ← ADD THIS as the FIRST parameter
     file: UploadFile = File(...),
     session_id: str = "",
 ):
@@ -247,7 +278,8 @@ async def transcribe_audio(
     return result
 
 @app.post("/api/resume/parse")
-async def parse_resume(file: UploadFile = File(...)):
+@limiter.limit("20/hour")  # ← ADD THIS
+async def parse_resume(request: Request, file: UploadFile = File(...)):  # ← ADD `request: Request`
     """Extract text from an uploaded PDF resume."""
     try:
         contents = await file.read()
@@ -274,3 +306,19 @@ async def save_session_metrics(session_id: str, metrics: dict):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+# ============================================================
+# PRODUCTION SERVER ENTRY
+# ============================================================
+
+if __name__ == "__main__":
+    import uvicorn
+    # Use PORT env var (Fly.io sets this to 8080)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        # No --reload in production
+    )
