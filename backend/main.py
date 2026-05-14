@@ -115,7 +115,7 @@ def root():
     return {
         "status": "ok",
         "message": "AI Interview Coach API is running",
-        "version": "0.3.0",
+        "version": "0.6.0",
     }
 
 
