@@ -206,17 +206,34 @@ export default function Interview() {
         }
       } catch (err) {
         isSubmittingRef.current = false;
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "interviewer",
-            content: "Sorry, something went wrong. Please try again.",
-          },
-        ]);
+        // Count how many candidate answers are already in the messages array.
+        // If all 5 are submitted the interview likely completed on the server but
+        // the response was lost (e.g. Fly.io timeout). Don't restart the recording
+        // loop — show a completion message instead.
+        const answersSubmitted = messages.filter((m) => m.role === "candidate").length;
+        if (answersSubmitted >= 5) {
+          setPhase("complete");
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "interviewer",
+              content:
+                "Your interview is complete! There was a brief connection issue, but your answers were saved. Click below to view your report.",
+            },
+          ]);
+        } else {
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "interviewer",
+              content: "Sorry, something went wrong. Please try again.",
+            },
+          ]);
+        }
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sessionId, voice, clearAllTimers]
+    [sessionId, voice, clearAllTimers, messages]
   );
 
   const saveFinalMetrics = async () => {

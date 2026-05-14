@@ -98,8 +98,11 @@ def _rebuild_orchestrator(session_id: str) -> InterviewOrchestrator:
     for msg in db_messages:
         interviewer.history.append(Message(role=msg["role"], content=msg["content"]))
 
-    # question_count = number of interviewer turns (opening counts as 1)
-    interviewer.question_count = sum(1 for m in db_messages if m["role"] == "interviewer")
+    # Cap question_count at TOTAL_QUESTIONS so a completed session that has a
+    # closing message (role="interviewer") doesn't push count above the limit
+    # and accidentally re-enter the closing branch on the very next rebuild.
+    raw_count = sum(1 for m in db_messages if m["role"] == "interviewer")
+    interviewer.question_count = min(raw_count, InterviewerAgent.TOTAL_QUESTIONS)
 
     orchestrator = InterviewOrchestrator(interviewer)
     active_orchestrators[session_id] = orchestrator
@@ -171,6 +174,25 @@ def start_interview(request: Request, setup: InterviewSetup):  # ← ADD `reques
 @limiter.limit("60/hour")  # ← ADD THIS
 def respond_to_interview(request: Request, turn: InterviewTurn):  # ← ADD `request: Request`
     """Submit an answer; multi-agent flow runs in the background."""
+    # Get full session context first — need it to detect already-completed sessions
+    session = db.get_session(turn.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found. Start a new interview.")
+
+    # If the interview was already completed (e.g. client retried after a timeout),
+    # return the stored report instead of re-processing.
+    if session.get("status") == "completed":
+        existing_report = db.get_report(turn.session_id)
+        existing_evals = db.get_evaluations(turn.session_id)
+        closing_msg = "Thank you — your interview is complete! Click below to view your report."
+        return InterviewResponseV2(
+            session_id=turn.session_id,
+            interviewer_message=closing_msg,
+            question_number=InterviewerAgent.TOTAL_QUESTIONS,
+            is_complete=True,
+            final_report=FinalReport(**existing_report) if existing_report else None,
+        )
+
     if turn.session_id not in active_orchestrators:
         orchestrator = _rebuild_orchestrator(turn.session_id)
     else:
@@ -180,11 +202,6 @@ def respond_to_interview(request: Request, turn: InterviewTurn):  # ← ADD `req
     try:
         # Get the last question (what the interviewer just asked)
         last_question = interviewer.history[-1].content if interviewer.history else ""
-
-        # Get full session context for the orchestrator
-        session = db.get_session(turn.session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not in database")
 
         existing_evals = db.get_evaluations(turn.session_id)
 
