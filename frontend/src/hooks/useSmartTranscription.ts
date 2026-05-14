@@ -76,56 +76,8 @@ export function useSmartTranscription(sessionId: string): UseSmartTranscriptionR
   // Accumulates finalized text across recognition restarts within one recording session
   const previewFinalizedRef = useRef("");
 
-  // Setup speech recognition for live preview (best-effort, can fail silently)
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      let newFinalized = "";
-      let interim = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          newFinalized += event.results[i][0].transcript + " ";
-        } else {
-          // Last interim result only — Chrome may fire multiple, only show latest
-          interim = event.results[i][0].transcript;
-        }
-      }
-      if (newFinalized) previewFinalizedRef.current += newFinalized;
-      // Replace preview: finalized text + current interim (no accumulation bug)
-      setLivePreview(previewFinalizedRef.current + interim);
-    };
-
-    recognition.onerror = (event: any) => {
-      // Silent fail — preview is non-critical
-      if (event.error !== "no-speech" && event.error !== "aborted") {
-        console.warn("Preview recognition error:", event.error);
-      }
-    };
-
-    recognition.onend = () => {
-      if (shouldRestartRef.current) {
-        try {
-          recognition.start();
-        } catch (e) {}
-      }
-    };
-
-    recognitionRef.current = recognition;
-
-    return () => {
-      shouldRestartRef.current = false;
-      recognition.abort();
-    };
-  }, []);
+  // Recognition is created fresh per recording session (see startRecording).
+  // A persistent instance breaks after a few stop/start cycles in Chrome.
 
   // ============================================================
   // AUDIO-LEVEL VAD (the reliable speech detector)
@@ -230,11 +182,58 @@ export function useSmartTranscription(sessionId: string): UseSmartTranscriptionR
       // Capture in 500ms chunks, but NEVER clear until we stop
       mediaRecorder.start(500);
 
-      // Start live preview (best effort)
-      shouldRestartRef.current = true;
-      try {
-        recognitionRef.current?.start();
-      } catch (e) {}
+      // Create a FRESH SpeechRecognition instance for this session.
+      // Reusing the same instance across questions causes it to silently
+      // stop working after a few stop/start cycles in Chrome.
+      const SpeechRecognition =
+        (typeof window !== "undefined" &&
+          (window.SpeechRecognition || window.webkitSpeechRecognition)) ||
+        null;
+      if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = "en-US";
+
+        recognition.onresult = (event: SpeechRecognitionEvent) => {
+          let newFinalized = "";
+          let interim = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) {
+              newFinalized += event.results[i][0].transcript + " ";
+            } else {
+              interim = event.results[i][0].transcript;
+            }
+          }
+          if (newFinalized) previewFinalizedRef.current += newFinalized;
+          setLivePreview(previewFinalizedRef.current + interim);
+        };
+
+        recognition.onerror = (event: any) => {
+          if (event.error === "network") {
+            // Google's speech servers unreachable — kill the restart loop.
+            // Whisper will still transcribe the final answer from the audio recording.
+            shouldRestartRef.current = false;
+          } else if (event.error !== "no-speech" && event.error !== "aborted") {
+            console.warn("Preview recognition error:", event.error);
+          }
+        };
+
+        // 100ms delay before restarting prevents InvalidStateError race condition
+        recognition.onend = () => {
+          if (shouldRestartRef.current) {
+            setTimeout(() => {
+              if (shouldRestartRef.current) {
+                try { recognition.start(); } catch (e) {}
+              }
+            }, 100);
+          }
+        };
+
+        recognitionRef.current = recognition;
+        shouldRestartRef.current = true;
+        try { recognition.start(); } catch (e) {}
+      }
 
       // Start audio-level VAD
       setupVAD(stream);
@@ -248,8 +247,8 @@ export function useSmartTranscription(sessionId: string): UseSmartTranscriptionR
 
   const sendToWhisper = useCallback(
     async (audioBlob: Blob): Promise<string> => {
-      if (audioBlob.size < 1000) {
-        // Less than 1KB → almost certainly no real speech
+      if (audioBlob.size < 200) {
+        // Less than 200 bytes → empty recording, skip Whisper call
         return "";
       }
 
@@ -277,7 +276,10 @@ export function useSmartTranscription(sessionId: string): UseSmartTranscriptionR
 
   const cleanupRecording = useCallback(() => {
     shouldRestartRef.current = false;
-    recognitionRef.current?.stop();
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort(); } catch (e) {}
+      recognitionRef.current = null;
+    }
 
     if (vadIntervalRef.current) {
       clearInterval(vadIntervalRef.current);
@@ -304,16 +306,18 @@ export function useSmartTranscription(sessionId: string): UseSmartTranscriptionR
       const recorder = mediaRecorderRef.current;
       if (!recorder || recorder.state === "inactive") {
         cleanupRecording();
-        resolve(finalTranscriptRef.current);
+        resolve(finalTranscriptRef.current || previewFinalizedRef.current);
         return;
       }
 
       recorder.onstop = async () => {
         setIsRecording(false);
+        // Capture preview text before cleanup clears speech recognition
+        const previewFallback = previewFinalizedRef.current.trim();
         cleanupRecording();
 
         if (audioChunksRef.current.length === 0) {
-          resolve("");
+          resolve(previewFallback);
           return;
         }
 
@@ -323,11 +327,14 @@ export function useSmartTranscription(sessionId: string): UseSmartTranscriptionR
         });
 
         setIsTranscribing(true);
-        const text = await sendToWhisper(audioBlob);
+        const whisperText = await sendToWhisper(audioBlob);
         setIsTranscribing(false);
-        setFinalTranscript(text);
+
+        // Prefer Whisper result; fall back to Web Speech API preview if Whisper returns empty
+        const finalText = whisperText.trim() || previewFallback;
+        setFinalTranscript(finalText);
         audioChunksRef.current = [];
-        resolve(text);
+        resolve(finalText);
       };
 
       // Request the latest chunk before stopping

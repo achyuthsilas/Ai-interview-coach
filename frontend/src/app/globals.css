@@ -24,3 +24,41 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ============================================================
+   AI INTERVIEW COACH — GREEN THEME PALETTE
+   ============================================================ */
+:root {
+  --brand-deep: #0a1f1a;        /* Deepest background green */
+  --brand-dark: #0f2e26;         /* Dark surface */
+  --brand-mid: #1a4d40;          /* Mid green */
+  --brand-accent: #2dd4bf;       /* Bright teal accent */
+  --brand-glow: #14b8a6;         /* Glow color */
+  --brand-soft: #d4f4e8;         /* Light text on dark */
+}
+
+.bg-brand-gradient {
+  background: linear-gradient(135deg, #0a1f1a 0%, #0f2e26 50%, #0a1f1a 100%);
+}
+
+.bg-brand-hero {
+  background: radial-gradient(ellipse at center, #143a30 0%, #0a1f1a 70%, #050f0c 100%);
+}
+
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.animate-float {
+  animation: float-slow 4s ease-in-out infinite;
+}
+
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 30px rgba(45, 212, 191, 0.4); }
+  50% { box-shadow: 0 0 60px rgba(45, 212, 191, 0.7); }
+}
+
+.animate-glow {
+  animation: glow-pulse 3s ease-in-out infinite;
+}

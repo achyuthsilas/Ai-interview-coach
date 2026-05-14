@@ -268,7 +268,7 @@ export default function Interview() {
   const displayTranscript = transcription.livePreview || "";
 
   return (
-    <main className="h-screen bg-gradient-to-br from-indigo-950 via-purple-950 to-slate-900 text-white overflow-hidden flex flex-col">
+    <main className="h-screen bg-brand-gradient text-white overflow-hidden flex flex-col">
       <header className="px-6 py-3 flex justify-between items-center bg-black/40 backdrop-blur-md border-b border-white/10">
         <div className="text-sm font-semibold">
           {company} • Question {questionNumber} / 5
@@ -368,13 +368,13 @@ export default function Interview() {
               <div className="flex justify-center gap-3 mt-3">
                 <button
                   onClick={handleManualSubmit}
-                  className="px-6 py-2 bg-blue-600/80 hover:bg-blue-600 backdrop-blur-md rounded-lg font-medium transition-all"
+                  className="px-6 py-2 bg-emerald-500 hover:bg-emerald-400 backdrop-blur-md rounded-lg font-medium text-slate-900 transition-all"
                 >
                   Submit Answer →
                 </button>
                 <button
                   onClick={handleSkip}
-                  className="px-6 py-2 bg-slate-700/80 hover:bg-slate-600 backdrop-blur-md rounded-lg font-medium transition-all"
+                  className="px-6 py-2 bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/30 backdrop-blur-md rounded-lg font-medium transition-all"
                   title="Skip this question"
                 >
                   ⏭️ Skip
@@ -391,7 +391,7 @@ export default function Interview() {
                     localStorage.removeItem("interviewSession");
                     router.push(`/report/${id}`);
                   }}
-                  className="px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 rounded-lg font-semibold transition-all"
+                  className="px-8 py-3 bg-gradient-to-r from-emerald-400 to-teal-400 hover:from-emerald-300 hover:to-teal-300 rounded-lg font-semibold text-slate-900 transition-all"
                 >
                   View Your Report →
                 </button>
@@ -414,18 +414,18 @@ function MetricBar({
   color: "green" | "blue" | "red" | "purple";
 }) {
   const colorMap = {
-    green: "from-green-500 to-emerald-400",
-    blue: "from-blue-500 to-cyan-400",
+    green: "from-emerald-400 to-teal-400",
+    blue: "from-teal-400 to-cyan-400",
     red: "from-red-500 to-orange-400",
-    purple: "from-purple-500 to-pink-400",
+    purple: "from-emerald-500 to-teal-500",
   };
   return (
     <div className="mb-2 last:mb-0">
       <div className="flex justify-between text-[11px] mb-0.5">
-        <span className="text-slate-300">{label}</span>
+        <span className="text-emerald-100/80">{label}</span>
         <span className="text-white font-bold">{value}%</span>
       </div>
-      <div className="h-1.5 bg-slate-700/60 rounded-full overflow-hidden">
+      <div className="h-1.5 bg-emerald-950/60 rounded-full overflow-hidden">
         <div
           className={`h-full bg-gradient-to-r ${colorMap[color]} transition-all duration-300`}
           style={{ width: `${Math.min(100, value)}%` }}

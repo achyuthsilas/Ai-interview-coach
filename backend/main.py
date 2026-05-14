@@ -14,7 +14,6 @@ from agents.orchestrator import InterviewOrchestrator
 from database.supabase_client import db
 from fastapi import File, UploadFile
 from services.voice_service import voice_service
-from models.schemas import SessionMetrics
 from pypdf import PdfReader
 import io
 
