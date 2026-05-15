@@ -187,30 +187,62 @@ Open [http://localhost:3000](http://localhost:3000) 🚀
 ## 📁 Project Structure
 
 ai-interview-coach/
-├── frontend/                  # Next.js app
+├── frontend/                         # Next.js frontend application
 │   ├── src/
-│   │   ├── app/              # Pages (home, setup, interview, report)
-│   │   ├── components/       # WebcamPanel, MetricBar, etc.
-│   │   ├── hooks/            # useSpeechRecognition, useVisionAnalysis, etc.
-│   │   └── lib/              # config, API client
+│   │   ├── app/                      # App Router pages
+│   │   │   ├── page.tsx              # Home page
+│   │   │   ├── setup/                # Interview setup page
+│   │   │   ├── interview/            # Live interview page
+│   │   │   └── report/               # Final report page
+│   │   │
+│   │   ├── components/               # Reusable UI components
+│   │   │   ├── WebcamPanel.tsx
+│   │   │   ├── MetricBar.tsx
+│   │   │   ├── TranscriptBox.tsx
+│   │   │   └── FeedbackCard.tsx
+│   │   │
+│   │   ├── hooks/                    # Custom React hooks
+│   │   │   ├── useSpeechRecognition.ts
+│   │   │   ├── useVisionAnalysis.ts
+│   │   │   ├── useInterviewTimer.ts
+│   │   │   └── useEmotionTracking.ts
+│   │   │
+│   │   └── lib/                      # Utilities and API configuration
+│   │       ├── config.ts
+│   │       ├── apiClient.ts
+│   │       └── constants.ts
+│   │
 │   └── public/
-│       ├── images/           # Hero image and assets
-│       └── models/           # face-api.js model weights
+│       ├── images/                   # Static images and assets
+│       └── models/                   # face-api.js model weights
 │
-├── backend/                   # FastAPI app
-│   ├── agents/               # Multi-agent system
-│   │   ├── interviewer.py    # Gemini-powered interviewer
-│   │   ├── evaluator.py      # Groq Llama scorer
-│   │   ├── coach.py          # Final report generator
-│   │   └── orchestrator.py   # LangGraph coordinator
-│   ├── database/             # Supabase client
-│   ├── models/               # Pydantic schemas
-│   ├── services/             # Whisper transcription
-│   ├── main.py               # FastAPI entry point
-│   └── Dockerfile            # For HF Spaces deployment
+├── backend/                          # FastAPI backend application
+│   ├── agents/                       # Multi-agent AI system
+│   │   ├── interviewer.py            # Gemini-powered interviewer agent
+│   │   ├── evaluator.py              # Groq Llama evaluation agent
+│   │   ├── coach.py                  # Final feedback/report generator
+│   │   └── orchestrator.py           # LangGraph workflow coordinator
+│   │
+│   ├── database/                     # Database and Supabase integration
+│   │   └── supabase_client.py
+│   │
+│   ├── models/                       # Pydantic request/response schemas
+│   │   ├── interview.py
+│   │   ├── evaluation.py
+│   │   └── report.py
+│   │
+│   ├── services/                     # Core backend services
+│   │   ├── whisper_service.py        # Whisper transcription service
+│   │   ├── vision_service.py         # Face/emotion analysis
+│   │   └── scoring_service.py
+│   │
+│   ├── main.py                       # FastAPI application entry point
+│   └── Dockerfile                    # Docker config for deployment
 │
-└── README.md
----
+├── README.md                         # Project documentation
+├── .env.example                      # Environment variables template
+├── docker-compose.yml                # Local development setup
+└── requirements.txt                  # Python dependencies
 
 ## 🔐 Privacy & Security
 
