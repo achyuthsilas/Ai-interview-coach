@@ -210,8 +210,6 @@ ai-interview-coach/
 │   └── Dockerfile            # For HF Spaces deployment
 │
 └── README.md
-
-
 ---
 
 ## 🔐 Privacy & Security
