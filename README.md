@@ -4,6 +4,8 @@
 
 ### Practice interviews with a multi-agent AI system that conducts, analyzes, and coaches you in real-time.
 
+![AI Interview Coach Banner](./frontend/public/images/hero.png)
+
 [![Live Demo](https://img.shields.io/badge/🚀_Live_Demo-Try_Now-success?style=for-the-badge)](https://ai-interview-coach-git-main-achyuthsilas-projects.vercel.app)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![Built With](https://img.shields.io/badge/Built_With-Next.js_+_FastAPI-black?style=for-the-badge)](#tech-stack)
