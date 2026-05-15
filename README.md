@@ -45,7 +45,7 @@ Unlike typical "AI interview" chatbots, this app uses **four specialized AI agen
 
 ## 🏗️ Architecture
 
-┌─────────────────────┐
+                ┌─────────────────────┐
                 │     Candidate       │
                 │  Webcam · Mic · UI  │
                 └──────────┬──────────┘
