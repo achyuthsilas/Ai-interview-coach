@@ -53,11 +53,11 @@ class VoiceService:
 
             transcription = self.client.audio.transcriptions.create(
                 file=(filename, audio_bytes),
-                model="whisper-large-v3",
+                model="whisper-large-v3-turbo",  # ~2x faster, same accuracy
                 response_format="verbose_json",
                 language="en",
                 prompt=prompt,
-                temperature=0.0,  # Most deterministic = most accurate
+                temperature=0.0,
             )
 
             return {

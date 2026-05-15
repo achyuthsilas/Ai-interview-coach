@@ -114,9 +114,11 @@ class InterviewerAgent:
         # Gemini is primary — higher free quota, no strict token/day cap.
         # Groq Llama is the fallback for when Gemini is unavailable.
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
+            model="gemini-2.0-flash",  # Stable, fast model
             temperature=0.7,
             google_api_key=os.getenv("GEMINI_API_KEY"),
+            # Limit response length to speed things up
+            max_output_tokens=300,
         )
         self._fallback_llm = ChatGroq(
             model="llama-3.3-70b-versatile",

@@ -172,49 +172,28 @@ def start_interview(request: Request, setup: InterviewSetup):  # ← ADD `reques
 
 
 @app.post("/api/interview/respond", response_model=InterviewResponseV2)
-@limiter.limit("60/hour")  # ← ADD THIS
-def respond_to_interview(request: Request, turn: InterviewTurn):  # ← ADD `request: Request`
+@limiter.limit("60/hour")
+def respond_to_interview(request: Request, turn: InterviewTurn):
     """Submit an answer; multi-agent flow runs in the background."""
-    # Get full session context first — need it to detect already-completed sessions
-    session = db.get_session(turn.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found. Start a new interview.")
-
-    # If the interview was already completed (e.g. client retried after a timeout),
-    # return the stored report instead of re-processing.
-    if session.get("status") == "completed":
-        existing_report = db.get_report(turn.session_id)
-        existing_evals = db.get_evaluations(turn.session_id)
-        closing_msg = "Thank you — your interview is complete! Click below to view your report."
-        return InterviewResponseV2(
-            session_id=turn.session_id,
-            interviewer_message=closing_msg,
-            question_number=InterviewerAgent.TOTAL_QUESTIONS,
-            is_complete=True,
-            final_report=FinalReport(**existing_report) if existing_report else None,
+    if turn.session_id not in active_orchestrators:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found. It may have expired — start a new interview.",
         )
 
-    if turn.session_id not in active_orchestrators:
-        orchestrator = _rebuild_orchestrator(turn.session_id)
-    else:
-        orchestrator = active_orchestrators[turn.session_id]
+    orchestrator = active_orchestrators[turn.session_id]
     interviewer = orchestrator.interviewer
 
     try:
-        # Get the last question (what the interviewer just asked)
         last_question = interviewer.history[-1].content if interviewer.history else ""
+
+        session = db.get_session(turn.session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not in database")
 
         existing_evals = db.get_evaluations(turn.session_id)
 
-        # Save the candidate's answer
-        db.add_message(
-            turn.session_id,
-            "candidate",
-            turn.answer,
-            question_number=interviewer.question_count,
-        )
-
-        # 🚀 Run the multi-agent flow
+        # 🚀 Run the multi-agent flow (now parallel!)
         final_state = orchestrator.run_turn(
             session_id=turn.session_id,
             setup={
@@ -227,36 +206,50 @@ def respond_to_interview(request: Request, turn: InterviewTurn):  # ← ADD `req
             existing_evaluations=existing_evals,
         )
 
-        # Save the new evaluation (the latest one)
-        if final_state["evaluations"] and len(final_state["evaluations"]) > len(existing_evals):
-            new_eval = final_state["evaluations"][-1]
-            db.save_evaluation(turn.session_id, new_eval)
-
-        # Save the new interviewer message
-        db.add_message(
-            turn.session_id,
-            "interviewer",
-            final_state["next_message"],
-            question_number=interviewer.question_count,
-        )
-
-        # If complete, save the final report
+        # 🚀 Build response IMMEDIATELY — don't wait for DB writes
         final_report_obj = None
         if final_state["is_complete"] and final_state["final_report"]:
-            db.save_report(turn.session_id, final_state["final_report"])
-            db.complete_session(turn.session_id)
             final_report_obj = FinalReport(**final_state["final_report"])
 
-            # Clean up the in-memory orchestrator
-            del active_orchestrators[turn.session_id]
-
-        return InterviewResponseV2(
+        response = InterviewResponseV2(
             session_id=turn.session_id,
             interviewer_message=final_state["next_message"],
             question_number=interviewer.question_count,
             is_complete=final_state["is_complete"],
             final_report=final_report_obj,
         )
+
+        # 🚀 Do all DB writes in a background thread (fire and forget)
+        def _persist():
+            try:
+                db.add_message(
+                    turn.session_id,
+                    "candidate",
+                    turn.answer,
+                    question_number=interviewer.question_count,
+                )
+                if final_state["evaluations"] and len(final_state["evaluations"]) > len(existing_evals):
+                    new_eval = final_state["evaluations"][-1]
+                    db.save_evaluation(turn.session_id, new_eval)
+                db.add_message(
+                    turn.session_id,
+                    "interviewer",
+                    final_state["next_message"],
+                    question_number=interviewer.question_count,
+                )
+                if final_state["is_complete"] and final_state["final_report"]:
+                    db.save_report(turn.session_id, final_state["final_report"])
+                    db.complete_session(turn.session_id)
+                    if turn.session_id in active_orchestrators:
+                        del active_orchestrators[turn.session_id]
+            except Exception as e:
+                print(f"⚠️ DB persist error: {e}")
+
+        # Run DB writes in background — return response IMMEDIATELY
+        import threading
+        threading.Thread(target=_persist, daemon=True).start()
+
+        return response
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
