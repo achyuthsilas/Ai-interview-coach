@@ -187,13 +187,14 @@ Open [http://localhost:3000](http://localhost:3000) 🚀
 ## 📁 Project Structure
 
 ai-interview-coach/
-├── frontend/                         # Next.js frontend application
+│
+├── frontend/                         # Next.js frontend app
 │   ├── src/
-│   │   ├── app/                      # App Router pages
-│   │   │   ├── page.tsx              # Home page
-│   │   │   ├── setup/                # Interview setup page
-│   │   │   ├── interview/            # Live interview page
-│   │   │   └── report/               # Final report page
+│   │   ├── app/                      # Application pages
+│   │   │   ├── page.tsx
+│   │   │   ├── setup/
+│   │   │   ├── interview/
+│   │   │   └── report/
 │   │   │
 │   │   ├── components/               # Reusable UI components
 │   │   │   ├── WebcamPanel.tsx
@@ -201,48 +202,48 @@ ai-interview-coach/
 │   │   │   ├── TranscriptBox.tsx
 │   │   │   └── FeedbackCard.tsx
 │   │   │
-│   │   ├── hooks/                    # Custom React hooks
+│   │   ├── hooks/                    # Custom hooks
 │   │   │   ├── useSpeechRecognition.ts
 │   │   │   ├── useVisionAnalysis.ts
-│   │   │   ├── useInterviewTimer.ts
-│   │   │   └── useEmotionTracking.ts
+│   │   │   ├── useEmotionTracking.ts
+│   │   │   └── useInterviewTimer.ts
 │   │   │
-│   │   └── lib/                      # Utilities and API configuration
+│   │   └── lib/                      # Config and utilities
 │   │       ├── config.ts
 │   │       ├── apiClient.ts
 │   │       └── constants.ts
 │   │
 │   └── public/
-│       ├── images/                   # Static images and assets
-│       └── models/                   # face-api.js model weights
+│       ├── images/                   # Static assets
+│       └── models/                   # face-api.js models
 │
-├── backend/                          # FastAPI backend application
-│   ├── agents/                       # Multi-agent AI system
-│   │   ├── interviewer.py            # Gemini-powered interviewer agent
-│   │   ├── evaluator.py              # Groq Llama evaluation agent
-│   │   ├── coach.py                  # Final feedback/report generator
-│   │   └── orchestrator.py           # LangGraph workflow coordinator
+├── backend/                          # FastAPI backend
+│   ├── agents/                       # AI agents
+│   │   ├── interviewer.py
+│   │   ├── evaluator.py
+│   │   ├── coach.py
+│   │   └── orchestrator.py
 │   │
-│   ├── database/                     # Database and Supabase integration
+│   ├── database/
 │   │   └── supabase_client.py
 │   │
-│   ├── models/                       # Pydantic request/response schemas
+│   ├── models/                       # Pydantic schemas
 │   │   ├── interview.py
 │   │   ├── evaluation.py
 │   │   └── report.py
 │   │
-│   ├── services/                     # Core backend services
-│   │   ├── whisper_service.py        # Whisper transcription service
-│   │   ├── vision_service.py         # Face/emotion analysis
+│   ├── services/                     # Backend services
+│   │   ├── whisper_service.py
+│   │   ├── vision_service.py
 │   │   └── scoring_service.py
 │   │
-│   ├── main.py                       # FastAPI application entry point
-│   └── Dockerfile                    # Docker config for deployment
+│   ├── main.py
+│   └── Dockerfile
 │
-├── README.md                         # Project documentation
-├── .env.example                      # Environment variables template
-├── docker-compose.yml                # Local development setup
-└── requirements.txt                  # Python dependencies
+├── README.md
+├── requirements.txt
+├── docker-compose.yml
+└── .env.example
 
 ## 🔐 Privacy & Security
 
