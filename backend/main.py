@@ -4,6 +4,7 @@ Phase 3: Multi-agent orchestration with persistence.
 """
 
 import os
+import threading
 from typing import Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -103,6 +104,8 @@ def _rebuild_orchestrator(session_id: str) -> InterviewOrchestrator:
     interviewer.question_count = min(raw_count, InterviewerAgent.TOTAL_QUESTIONS)
 
     orchestrator = InterviewOrchestrator(interviewer)
+    # Restore cached evaluations so we don't re-fetch them every turn
+    orchestrator.evaluations = db.get_evaluations(session_id)
     active_orchestrators[session_id] = orchestrator
     return orchestrator
 
@@ -137,13 +140,13 @@ def check_keys():
 # ============================================================
 
 @app.post("/api/interview/start", response_model=InterviewResponseV2)
-@limiter.limit("10/hour")  # ← ADD THIS
-def start_interview(request: Request, setup: InterviewSetup):  # ← ADD `request: Request`
+@limiter.limit("10/hour")
+def start_interview(request: Request, setup: InterviewSetup):
     """Begins a new interview, persisting it to the DB."""
     try:
         # Create session in database
         session_id = db.create_session({
-            "user_id": "anonymous",  # Will be real user ID after auth in Phase 5
+            "user_id": "anonymous",
             "company": setup.company,
             "job_description": setup.job_description,
             "resume": setup.resume,
@@ -151,15 +154,20 @@ def start_interview(request: Request, setup: InterviewSetup):  # ← ADD `reques
             "persona": setup.persona.value,
         })
 
-        # Create the interviewer agent + orchestrator
+        # Create the interviewer agent + orchestrator, then call LLM
         interviewer = InterviewerAgent(setup)
         opening_message = interviewer.start_interview()
 
         orchestrator = InterviewOrchestrator(interviewer)
         active_orchestrators[session_id] = orchestrator
 
-        # Save the opening message
-        db.add_message(session_id, "interviewer", opening_message, question_number=1)
+        # Save opening message in background — don't block the response
+        threading.Thread(
+            target=db.add_message,
+            args=(session_id, "interviewer", opening_message),
+            kwargs={"question_number": 1},
+            daemon=True,
+        ).start()
 
         return InterviewResponseV2(
             session_id=session_id,
@@ -174,12 +182,15 @@ def start_interview(request: Request, setup: InterviewSetup):  # ← ADD `reques
 @app.post("/api/interview/respond", response_model=InterviewResponseV2)
 @limiter.limit("60/hour")
 def respond_to_interview(request: Request, turn: InterviewTurn):
-    """Submit an answer; multi-agent flow runs in the background."""
+    """Submit an answer; multi-agent flow runs with evaluator deferred."""
     if turn.session_id not in active_orchestrators:
-        raise HTTPException(
-            status_code=404,
-            detail="Session not found. It may have expired — start a new interview.",
-        )
+        try:
+            _rebuild_orchestrator(turn.session_id)
+        except HTTPException:
+            raise HTTPException(
+                status_code=404,
+                detail="Session not found. It may have expired — start a new interview.",
+            )
 
     orchestrator = active_orchestrators[turn.session_id]
     interviewer = orchestrator.interviewer
@@ -187,26 +198,21 @@ def respond_to_interview(request: Request, turn: InterviewTurn):
     try:
         last_question = interviewer.history[-1].content if interviewer.history else ""
 
-        session = db.get_session(turn.session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not in database")
+        # Use cached setup — no DB round-trip needed
+        setup = {
+            "company": interviewer.setup.company,
+            "job_description": interviewer.setup.job_description,
+            "interview_type": interviewer.setup.interview_type.value,
+        }
 
-        existing_evals = db.get_evaluations(turn.session_id)
-
-        # 🚀 Run the multi-agent flow (now parallel!)
+        # Run turn — blocks only on the interviewer for non-final turns
         final_state = orchestrator.run_turn(
             session_id=turn.session_id,
-            setup={
-                "company": session["company"],
-                "job_description": session["job_description"],
-                "interview_type": session["interview_type"],
-            },
+            setup=setup,
             last_question=last_question,
             last_answer=turn.answer,
-            existing_evaluations=existing_evals,
         )
 
-        # 🚀 Build response IMMEDIATELY — don't wait for DB writes
         final_report_obj = None
         if final_state["is_complete"] and final_state["final_report"]:
             final_report_obj = FinalReport(**final_state["final_report"])
@@ -219,7 +225,7 @@ def respond_to_interview(request: Request, turn: InterviewTurn):
             final_report=final_report_obj,
         )
 
-        # 🚀 Do all DB writes in a background thread (fire and forget)
+        # All DB writes — and waiting for the deferred evaluator — happen here
         def _persist():
             try:
                 db.add_message(
@@ -228,9 +234,21 @@ def respond_to_interview(request: Request, turn: InterviewTurn):
                     turn.answer,
                     question_number=interviewer.question_count,
                 )
-                if final_state["evaluations"] and len(final_state["evaluations"]) > len(existing_evals):
-                    new_eval = final_state["evaluations"][-1]
-                    db.save_evaluation(turn.session_id, new_eval)
+
+                evaluator_future = final_state.get("_evaluator_future")
+                if evaluator_future is not None:
+                    # Non-final turn: evaluator still running; wait here in background
+                    try:
+                        new_eval = evaluator_future.result(timeout=60)
+                        orchestrator.evaluations.append(new_eval)
+                        db.save_evaluation(turn.session_id, new_eval)
+                    except Exception as e:
+                        print(f"⚠️ Background evaluator failed: {e}")
+                elif final_state["is_complete"] and orchestrator.evaluations:
+                    # Final turn: evaluation was appended to orchestrator.evaluations
+                    # inside run_turn; just persist the last (new) entry.
+                    db.save_evaluation(turn.session_id, orchestrator.evaluations[-1])
+
                 db.add_message(
                     turn.session_id,
                     "interviewer",
@@ -245,8 +263,6 @@ def respond_to_interview(request: Request, turn: InterviewTurn):
             except Exception as e:
                 print(f"⚠️ DB persist error: {e}")
 
-        # Run DB writes in background — return response IMMEDIATELY
-        import threading
         threading.Thread(target=_persist, daemon=True).start()
 
         return response
@@ -288,9 +304,9 @@ def list_sessions(user_id: str = "anonymous"):
     return result.data
 
 @app.post("/api/voice/transcribe")
-@limiter.limit("100/hour")  # ← ADD THIS
+@limiter.limit("100/hour")
 async def transcribe_audio(
-    request: Request,  # ← ADD THIS as the FIRST parameter
+    request: Request,
     file: UploadFile = File(...),
     session_id: str = "",
 ):
@@ -306,7 +322,6 @@ async def transcribe_audio(
         try:
             session = db.get_session(session_id)
             if session:
-                # Use first 300 chars of JD as context for Whisper
                 jd_snippet = session.get("job_description", "")[:300]
                 custom_prompt = f"Job: {jd_snippet}"
         except Exception:
@@ -320,12 +335,12 @@ async def transcribe_audio(
     return result
 
 @app.post("/api/resume/parse")
-@limiter.limit("20/hour")  # ← ADD THIS
-async def parse_resume(request: Request, file: UploadFile = File(...)):  # ← ADD `request: Request`
+@limiter.limit("20/hour")
+async def parse_resume(request: Request, file: UploadFile = File(...)):
     """Extract text from an uploaded PDF resume."""
     try:
         contents = await file.read()
-        
+
         if file.filename and file.filename.lower().endswith(".pdf"):
             pdf = PdfReader(io.BytesIO(contents))
             text = ""
@@ -333,12 +348,11 @@ async def parse_resume(request: Request, file: UploadFile = File(...)):  # ← A
                 text += page.extract_text() + "\n"
             return {"success": True, "text": text.strip()}
         else:
-            # Treat as plain text
             text = contents.decode("utf-8", errors="ignore")
             return {"success": True, "text": text.strip()}
     except Exception as e:
         return {"success": False, "error": str(e), "text": ""}
-    
+
 
 @app.post("/api/interview/{session_id}/metrics")
 async def save_session_metrics(session_id: str, metrics: dict):
@@ -348,7 +362,7 @@ async def save_session_metrics(session_id: str, metrics: dict):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 
 # ============================================================
 # PRODUCTION SERVER ENTRY
@@ -356,7 +370,6 @@ async def save_session_metrics(session_id: str, metrics: dict):
 
 if __name__ == "__main__":
     import uvicorn
-    # HF Spaces uses 7860, Fly.io used 8080, local dev uses 8000
     port = int(os.getenv("PORT", 7860))
     uvicorn.run(
         "main:app",

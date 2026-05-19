@@ -45,6 +45,12 @@ export default function Interview() {
   const handledMessageIndexRef = useRef(-1);
   const isSubmittingRef = useRef(false);
 
+  const [submitElapsed, setSubmitElapsed] = useState(0);
+  const [lastSubmitDuration, setLastSubmitDuration] = useState<number | null>(null);
+  const submitStartRef = useRef<number>(0);
+  const submitElapsedTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastDurationTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
     const sessionData = localStorage.getItem("interviewSession");
     if (!sessionData) {
@@ -66,9 +72,31 @@ export default function Interview() {
       vision.stop();
       voice.stop();
       clearAllTimers();
+      if (submitElapsedTimerRef.current) clearInterval(submitElapsedTimerRef.current);
+      if (lastDurationTimerRef.current) clearTimeout(lastDurationTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
+
+  useEffect(() => {
+    if (phase === "submitting") {
+      submitStartRef.current = Date.now();
+      setSubmitElapsed(0);
+      submitElapsedTimerRef.current = setInterval(() => {
+        setSubmitElapsed(Date.now() - submitStartRef.current);
+      }, 100);
+    } else if (submitElapsedTimerRef.current) {
+      clearInterval(submitElapsedTimerRef.current);
+      submitElapsedTimerRef.current = null;
+      if (submitStartRef.current > 0) {
+        const duration = (Date.now() - submitStartRef.current) / 1000;
+        submitStartRef.current = 0;
+        setLastSubmitDuration(duration);
+        if (lastDurationTimerRef.current) clearTimeout(lastDurationTimerRef.current);
+        lastDurationTimerRef.current = setTimeout(() => setLastSubmitDuration(null), 5000);
+      }
+    }
+  }, [phase]);
 
   const clearAllTimers = useCallback(() => {
     if (submitTimerRef.current) {
@@ -295,6 +323,11 @@ export default function Interview() {
           {company} • Question {questionNumber} / 5
         </div>
         <div className="flex items-center gap-4 text-sm">
+          {lastSubmitDuration !== null && phase !== "submitting" && (
+            <span className="font-mono text-xs text-slate-400">
+              ✓ response in {lastSubmitDuration.toFixed(1)}s
+            </span>
+          )}
           {phaseInfo.showTimer && countdown > 0 && (
             <div className="flex items-center gap-2">
               <div
@@ -371,10 +404,13 @@ export default function Interview() {
 
             {phase === "submitting" && (
               <div className="flex flex-col items-center gap-2">
-                <div className="bg-white/10 backdrop-blur-md rounded-full px-4 py-2 flex gap-2">
-                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" />
-                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:0.2s]" />
-                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:0.4s]" />
+                <div className="flex items-center gap-3">
+                  <div className="bg-white/10 backdrop-blur-md rounded-full px-4 py-2 flex gap-2">
+                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" />
+                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:0.2s]" />
+                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:0.4s]" />
+                  </div>
+                  <span className="font-mono text-white/70 text-sm">{(submitElapsed / 1000).toFixed(1)}s</span>
                 </div>
                 {transcription.isTranscribing && (
                   <div className="text-xs text-slate-300">

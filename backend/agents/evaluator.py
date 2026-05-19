@@ -57,10 +57,12 @@ class EvaluatorAgent:
     """Scores candidate answers in real-time."""
 
     def __init__(self):
+        # llama-3.1-8b-instant: very fast on Groq LPU, good enough for structured JSON scoring
         self.llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
-            temperature=0.3,  # Low temp for consistent scoring
+            model="llama-3.1-8b-instant",
+            temperature=0.3,
             groq_api_key=os.getenv("GROQ_API_KEY"),
+            max_tokens=350,
         )
 
     def evaluate(
@@ -75,7 +77,7 @@ class EvaluatorAgent:
 
         prompt = EVALUATION_PROMPT.format(
             company=company,
-            job_description=job_description,
+            job_description=job_description[:600],  # keep token count low
             interview_type=interview_type,
             question=question,
             answer=answer,

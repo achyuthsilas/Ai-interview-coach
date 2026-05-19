@@ -111,27 +111,28 @@ class InterviewerAgent:
         self.history: List[Message] = []
         self.question_count = 0
 
-        # Gemini is primary — higher free quota, no strict token/day cap.
-        # Groq Llama is the fallback for when Gemini is unavailable.
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",  # Stable, fast model
-            temperature=0.7,
-            google_api_key=os.getenv("GEMINI_API_KEY"),
-            # Limit response length to speed things up
-            max_output_tokens=300,
-        )
-        self._fallback_llm = ChatGroq(
+        # Groq is primary — LPU hardware gives consistent 2-4s latency.
+        # Gemini is the fallback for rate-limit / quota errors.
+        self.llm = ChatGroq(
             model="llama-3.3-70b-versatile",
             temperature=0.7,
             groq_api_key=os.getenv("GROQ_API_KEY"),
+            max_tokens=250,
+        )
+        self._fallback_llm = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            temperature=0.7,
+            google_api_key=os.getenv("GEMINI_API_KEY"),
+            max_output_tokens=250,
         )
 
     def _invoke(self, messages):
-        """Invoke Groq primary; fall back to Gemini on any error."""
+        """Invoke Groq primary; fall back to Gemini on rate-limit / quota errors."""
         try:
             return self.llm.invoke(messages)
         except Exception as e:
-            if "429" in str(e) or "rate" in str(e).lower() or "quota" in str(e).lower():
+            err = str(e).lower()
+            if "429" in str(e) or "rate" in err or "quota" in err or "limit" in err:
                 return self._fallback_llm.invoke(messages)
             raise
 
@@ -139,6 +140,10 @@ class InterviewerAgent:
         """Builds the master prompt that defines the interviewer's behavior."""
         persona = PERSONA_INSTRUCTIONS[self.setup.persona]
         interview_style = INTERVIEW_TYPE_INSTRUCTIONS[self.setup.interview_type]
+
+        # Truncate to keep token count low — full docs slow down every LLM call
+        jd = self.setup.job_description[:1200]
+        resume = self.setup.resume[:1200]
 
         return f"""You are an experienced interviewer at {self.setup.company}.
 
@@ -149,10 +154,10 @@ INTERVIEW TYPE:
 {interview_style}
 
 JOB DESCRIPTION:
-{self.setup.job_description}
+{jd}
 
 CANDIDATE'S RESUME:
-{self.setup.resume}
+{resume}
 
 CRITICAL RULES:
 1. Ask ONE question at a time. Never bundle multiple questions together.

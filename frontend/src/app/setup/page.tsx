@@ -133,7 +133,9 @@ export default function Setup() {
   const [error, setError] = useState("");
   const [resumeFileName, setResumeFileName] = useState("");
   const [parsingPdf, setParsingPdf] = useState(false);
+  const [startElapsed, setStartElapsed] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const startTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const [formData, setFormData] = useState({
     company: "",
@@ -177,8 +179,13 @@ export default function Setup() {
       setError("Please upload your resume first.");
       return;
     }
+    const t0 = Date.now();
+    setStartElapsed(0);
     setLoading(true);
     setError("");
+    startTimerRef.current = setInterval(() => {
+      setStartElapsed(Math.round((Date.now() - t0) / 100) / 10);
+    }, 100);
     try {
       const res = await fetch(`${API_URL}/api/interview/start`, {
         method: "POST",
@@ -197,6 +204,10 @@ export default function Setup() {
       );
       router.push("/interview");
     } catch (err) {
+      if (startTimerRef.current) {
+        clearInterval(startTimerRef.current);
+        startTimerRef.current = null;
+      }
       setError(err instanceof Error ? err.message : "Something went wrong");
       setLoading(false);
     }
@@ -377,7 +388,8 @@ export default function Setup() {
             {loading ? (
               <span className="flex items-center justify-center gap-3">
                 <span className="w-5 h-5 border-2 border-slate-900 border-t-transparent rounded-full animate-spin" />
-                Starting your interview…
+                <span>Starting your interview…</span>
+                <span className="font-mono text-slate-900/60">{startElapsed.toFixed(1)}s</span>
               </span>
             ) : (
               <span className="flex items-center justify-center gap-2">
